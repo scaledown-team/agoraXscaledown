@@ -1,4 +1,4 @@
-# Agora × ScaleDown : Real-Time Voice AI with Context Compression
+# Agora × ScaleDown
 
 
 
