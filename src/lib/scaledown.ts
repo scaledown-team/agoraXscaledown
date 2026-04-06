@@ -33,25 +33,13 @@ export async function compressContext(
 ): Promise<CompressResult> {
   const apiKey = process.env.SCALEDOWN_API_KEY;
   const apiUrl = process.env.SCALEDOWN_API_URL || "https://api.scaledown.xyz";
-  const isBaseline = process.env.BASELINE_MODE === "true";
 
   const fullContext = messages.map((m) => m.content).join("\n");
   const originalTokens = estimateTokens(fullContext);
 
-  // In baseline mode, pass through without compression
-  if (isBaseline || !apiKey) {
-    turnCounter++;
-    logTrace({
-      turn: turnCounter,
-      timestamp: Date.now(),
-      originalTokens,
-      compressedTokens: originalTokens,
-      compressionRatio: 0,
-      latencyMs: 0,
-      model: process.env.LLM_MODEL || "llama-3.3-70b-versatile",
-      baselineMode: true,
-    });
-
+  // If no API key configured, pass through without compression
+  if (!apiKey) {
+    console.warn("[ScaleDown] No API key configured, passing through uncompressed");
     return {
       messages,
       originalTokens,
