@@ -3,7 +3,7 @@
 import { useConversation } from "@/hooks/useConversation";
 
 export default function Home() {
-  const { status, mode, error, startConversation, endConversation } =
+  const { status, mode, error, audioAutoplayFailed, agentAudioReceived, startConversation, endConversation, unlockAudio } =
     useConversation();
 
   return (
@@ -61,6 +61,28 @@ export default function Home() {
         {error && (
           <div className="p-3 bg-red-900/30 border border-red-800 rounded-lg text-red-300 text-sm">
             {error}
+          </div>
+        )}
+
+        {/* Autoplay unlock button — shown when browser blocks audio */}
+        {audioAutoplayFailed && (
+          <button
+            onClick={unlockAudio}
+            className="w-full py-3 px-6 bg-yellow-600 hover:bg-yellow-500 rounded-xl text-base font-medium transition-colors animate-pulse"
+          >
+            🔊 Click to Enable Audio
+          </button>
+        )}
+
+        {/* Debug status — shows whether agent audio has arrived at all */}
+        {status === "active" && (
+          <div className="text-xs text-gray-500 space-y-1">
+            <p>
+              Agent audio:{" "}
+              <span className={agentAudioReceived ? "text-green-400" : "text-yellow-400"}>
+                {agentAudioReceived ? "✓ received" : "⏳ waiting..."}
+              </span>
+            </p>
           </div>
         )}
 
