@@ -178,10 +178,6 @@ ngrok http 3000
 
 Copy the `https://` URL into your `.env.local` as `PROXY_BASE_URL`, then restart the dev server.
 
-### 6. Talk
-
-Open [http://localhost:3000](http://localhost:3000), click **Start Conversation**, and start speaking. The compression metrics update live with every turn.
-
 ---
 
 ## Project Structure
