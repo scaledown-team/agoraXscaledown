@@ -120,7 +120,7 @@ export function useConversation(preferredMode?: "baseline" | "scaledown") {
         error: error.message || "Failed to start conversation",
       }));
     }
-  }, []);
+  }, [preferredMode]);
 
   const endConversation = useCallback(async () => {
     setState((prev) => ({ ...prev, status: "ending" }));
