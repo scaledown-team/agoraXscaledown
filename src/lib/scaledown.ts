@@ -65,7 +65,7 @@ export async function compressContext(
         context: conversationMessages.map((m) => `${m.role}: ${m.content}`).join("\n"),
         prompt: conversationMessages[conversationMessages.length - 1]?.content || "",
         scaledown: {
-          rate: options?.rate || "auto",
+          rate: options?.rate || "0.5",
         },
       }),
     });
@@ -84,11 +84,42 @@ export async function compressContext(
     const data = await response.json();
     const latencyMs = Date.now() - startTime;
 
-    // Reconstruct messages with compressed context
-    const compressedContent = data.compressed_prompt || "";
-    // Use API's exact token counts if available, fall back to estimates
-    const compressedTokens = data.compressed_prompt_tokens || estimateTokens(compressedContent);
+    console.log("[ScaleDown] API response:", JSON.stringify({
+      successful: data.successful,
+      original_prompt_tokens: data.original_prompt_tokens,
+      compressed_prompt_tokens: data.compressed_prompt_tokens,
+      compressed_prompt_length: data.compressed_prompt?.length,
+    }));
+
     const actualOriginalTokens = data.original_prompt_tokens || originalTokens;
+
+    // If ScaleDown didn't compress (content too short, successful=false, empty result)
+    // show 0% ratio — not 100% — and pass original messages through
+    if (!data.successful || !data.compressed_prompt) {
+      turnCounter++;
+      logTrace({
+        turn: turnCounter,
+        timestamp: Date.now(),
+        originalTokens: actualOriginalTokens,
+        compressedTokens: actualOriginalTokens,
+        compressionRatio: 0,
+        latencyMs,
+        model: process.env.LLM_MODEL || "llama-3.3-70b-versatile",
+        baselineMode: false,
+      });
+      return {
+        messages,
+        originalTokens: actualOriginalTokens,
+        compressedTokens: actualOriginalTokens,
+        compressionRatio: 0,
+      };
+    }
+
+    // Compression succeeded
+    const compressedContent = data.compressed_prompt;
+    const compressedTokens = data.compressed_prompt_tokens > 0
+      ? data.compressed_prompt_tokens
+      : estimateTokens(compressedContent);
     const compressionRatio = actualOriginalTokens > 0 ? 1 - compressedTokens / actualOriginalTokens : 0;
 
     // Build compressed message array: system prompt + compressed history + latest user message
