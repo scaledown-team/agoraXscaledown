@@ -28,12 +28,13 @@ export async function POST(req: NextRequest) {
     const stream = body.stream ?? false;
 
     // ---- STEP 1: Compress with ScaleDown ----
+    // compressContext handles logging the trace internally via logTrace()
     const { messages: compressedMessages, originalTokens, compressedTokens } =
       await compressContext(messages, { targetModel: model });
 
     console.log(
       `[LLM Proxy] Compressed ${originalTokens} -> ${compressedTokens} tokens ` +
-      `(${((1 - compressedTokens / originalTokens) * 100).toFixed(1)}% reduction)`
+      `(${originalTokens > 0 ? ((1 - compressedTokens / originalTokens) * 100).toFixed(1) : 0}% reduction)`
     );
 
     // ---- STEP 2: Forward to Groq ----

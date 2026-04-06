@@ -171,7 +171,7 @@ export default function Home() {
           <p className="font-semibold text-gray-400 mb-2 text-xs uppercase tracking-widest">Pipeline</p>
           <div className="text-gray-500 space-y-1 leading-relaxed">
             <p>Voice  Deepgram (ASR)</p>
-            {(mode === "scaledown" || (status === "idle" && preferredMode === "scaledown")) && (
+            {preferredMode === "scaledown" && (
               <p> Transcript  <span className="text-cyan-400 font-semibold">ScaleDown</span> (compress)</p>
             )}
             <p> Context  <span className="text-gray-300">Groq llama-3.3</span> (LLM)</p>

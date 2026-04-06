@@ -25,6 +25,8 @@ export async function POST(req: NextRequest) {
       ? requestedMode === "baseline"
       : process.env.BASELINE_MODE === "true";
 
+    console.log(`[join-conversation] requestedMode=${requestedMode} BASELINE_MODE=${process.env.BASELINE_MODE} isBaseline=${isBaseline}`);
+
     if (!appId) {
       return NextResponse.json(
         { error: "Agora App ID not configured" },
