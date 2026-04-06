@@ -11,6 +11,7 @@ interface ConversationState {
   agentId: string | null;
   appId: string | null;
   mode: "baseline" | "scaledown";
+  conversationId: string | null;
   error: string | null;
   audioAutoplayFailed: boolean;
   agentAudioReceived: boolean;
@@ -26,6 +27,7 @@ export function useConversation(preferredMode?: "baseline" | "scaledown") {
     agentId: null,
     appId: null,
     mode: "scaledown",
+    conversationId: null,
     error: null,
     audioAutoplayFailed: false,
     agentAudioReceived: false,
@@ -98,7 +100,7 @@ export function useConversation(preferredMode?: "baseline" | "scaledown") {
         body: JSON.stringify({ channelName, token: botToken, uid, botUid, requestedMode: preferredMode }),
       });
       if (!joinRes.ok) throw new Error("Failed to start AI agent");
-      const { agentId, mode } = await joinRes.json();
+      const { agentId, mode, conversationId } = await joinRes.json();
 
       setState((prev) => ({
         ...prev,
@@ -110,6 +112,7 @@ export function useConversation(preferredMode?: "baseline" | "scaledown") {
         agentId,
         appId,
         mode,
+        conversationId: conversationId || null,
         error: null,
       }));
     } catch (error: any) {
@@ -156,6 +159,7 @@ export function useConversation(preferredMode?: "baseline" | "scaledown") {
       agentId: null,
       appId: null,
       mode: "scaledown",
+      conversationId: null,
       error: null,
       audioAutoplayFailed: false,
       agentAudioReceived: false,
