@@ -64,7 +64,6 @@ export async function compressContext(
       body: JSON.stringify({
         context: conversationMessages.map((m) => `${m.role}: ${m.content}`).join("\n"),
         prompt: conversationMessages[conversationMessages.length - 1]?.content || "",
-        target_model: options?.targetModel || process.env.LLM_MODEL || "gpt-4o",
         scaledown: {
           rate: options?.rate || "auto",
         },
@@ -87,8 +86,10 @@ export async function compressContext(
 
     // Reconstruct messages with compressed context
     const compressedContent = data.compressed_prompt || "";
-    const compressedTokens = estimateTokens(compressedContent);
-    const compressionRatio = 1 - compressedTokens / originalTokens;
+    // Use API's exact token counts if available, fall back to estimates
+    const compressedTokens = data.compressed_prompt_tokens || estimateTokens(compressedContent);
+    const actualOriginalTokens = data.original_prompt_tokens || originalTokens;
+    const compressionRatio = actualOriginalTokens > 0 ? 1 - compressedTokens / actualOriginalTokens : 0;
 
     // Build compressed message array: system prompt + compressed history + latest user message
     const lastUserMessage = conversationMessages.filter((m) => m.role === "user").pop();
@@ -104,7 +105,7 @@ export async function compressContext(
     logTrace({
       turn: turnCounter,
       timestamp: Date.now(),
-      originalTokens,
+      originalTokens: actualOriginalTokens,
       compressedTokens,
       compressionRatio,
       latencyMs,
@@ -114,7 +115,7 @@ export async function compressContext(
 
     return {
       messages: compressedMessages,
-      originalTokens,
+      originalTokens: actualOriginalTokens,
       compressedTokens,
       compressionRatio,
     };
