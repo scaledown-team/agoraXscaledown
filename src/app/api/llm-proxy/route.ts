@@ -30,8 +30,9 @@ export async function POST(req: NextRequest) {
     // ---- STEP 1: Compress with ScaleDown (or pass-through in baseline) ----
     // compressContext handles logging the trace internally via logTrace()
     const isBaseline = req.nextUrl.searchParams.get("baseline") === "true";
+    const conversationId = req.nextUrl.searchParams.get("conversationId") || "unknown";
     const { messages: compressedMessages, originalTokens, compressedTokens } =
-      await compressContext(messages, { targetModel: model, baseline: isBaseline });
+      await compressContext(messages, { targetModel: model, baseline: isBaseline, conversationId });
 
     console.log(
       `[LLM Proxy] Compressed ${originalTokens} -> ${compressedTokens} tokens ` +
