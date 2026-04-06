@@ -48,6 +48,8 @@ export default function Home() {
   const [preferredMode, setPreferredMode] = useState<"baseline" | "scaledown">("baseline");
   const [traceData, setTraceData] = useState<TraceData | null>(null);
   const [conversations, setConversations] = useState<SavedConversation[]>([]);
+  const [conversationsLoading, setConversationsLoading] = useState(true);
+  const [conversationsError, setConversationsError] = useState<string | null>(null);
   const [selectedConvId, setSelectedConvId] = useState<string | null>(null);
   const [selectedTraceData, setSelectedTraceData] = useState<TraceData | null>(null);
   const [isDark, setIsDark] = useState(true);
@@ -64,10 +66,19 @@ export default function Home() {
 
   // Load all conversations from Supabase on mount
   const refreshConversations = useCallback(async () => {
-    const res = await fetch("/api/conversations");
-    if (res.ok) {
-      const data = await res.json();
-      setConversations(data.conversations || []);
+    setConversationsError(null);
+    try {
+      const res = await fetch("/api/conversations");
+      if (res.ok) {
+        const data = await res.json();
+        setConversations(data.conversations || []);
+      } else {
+        setConversationsError("Failed to load conversations");
+      }
+    } catch {
+      setConversationsError("Failed to load conversations");
+    } finally {
+      setConversationsLoading(false);
     }
   }, []);
 
@@ -86,7 +97,7 @@ export default function Home() {
         setSelectedConvId(endedId);
       });
     }
-  }, [status, refreshConversations]);
+  }, [status]);
 
   // Poll traces every 2s while active
   useEffect(() => {
@@ -160,7 +171,10 @@ export default function Home() {
     : "bg-gray-100 text-gray-400 hover:text-gray-700";
 
   return (
-    <main className={`flex h-screen ${bg} ${textPrimary} overflow-hidden transition-colors duration-200`}>
+    <main className={`flex flex-col h-screen ${bg} ${textPrimary} overflow-hidden transition-colors duration-200`}>
+
+      {/* Main content: left sidebar + right dashboard */}
+      <div className="flex flex-1 min-w-0 overflow-hidden">
 
       {/* ── LEFT: Controls ── */}
       <div className={`w-80 border-r ${border} ${sideBg} flex flex-col p-6 gap-5 shrink-0`}>
@@ -290,15 +304,31 @@ export default function Home() {
 
         {/* Header */}
         <div className="flex items-center justify-between shrink-0">
-          <div>
-            <h2 className="text-lg font-semibold">Live Savings Dashboard</h2>
-            <p className={`${textMuted} text-sm mt-0.5`}>
-              {isLive
-                ? `Listening · ${traceData?.traces.length ?? 0} exchange${traceData?.traces.length !== 1 ? "s" : ""} so far`
-                : hasTraces
-                ? `${displayTraces.length} exchanges recorded`
-                : "Start a conversation to see savings appear in real time"}
-            </p>
+          <div className="flex items-center gap-3">
+            {selectedConvId && (
+              <button
+                onClick={() => setSelectedConvId(null)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+                  isDark
+                    ? "bg-gray-800 text-gray-300 hover:text-white border-gray-700 hover:border-gray-600"
+                    : "bg-gray-100 text-gray-600 hover:text-gray-900 border-gray-200 hover:border-gray-300"
+                }`}
+              >
+                ← Back to Live
+              </button>
+            )}
+            <div>
+              <h2 className="text-lg font-semibold">
+                {selectedConvId ? `Conversation ${conversations.findIndex(c => c.id === selectedConvId) + 1} of ${conversations.length}` : "Live Savings Dashboard"}
+              </h2>
+              <p className={`${textMuted} text-sm mt-0.5`}>
+                {isLive
+                  ? `Listening · ${traceData?.traces.length ?? 0} exchange${traceData?.traces.length !== 1 ? "s" : ""} so far`
+                  : hasTraces
+                  ? `${displayTraces.length} exchanges recorded`
+                  : "Start a conversation to see savings appear in real time"}
+              </p>
+            </div>
           </div>
           {isLive && (
             <div className="flex items-center gap-1.5">
@@ -309,8 +339,8 @@ export default function Home() {
         </div>
 
         {/* Conversation tabs */}
-        {(conversations.length > 0 || isLive) && (
-          <div className="flex gap-2 overflow-x-auto pb-0.5 shrink-0">
+        {(conversations.length > 0 || isLive || conversationsLoading || conversationsError) && (
+          <div className="flex gap-2 overflow-x-auto pb-0.5 shrink-0 items-center">
             {isLive && (
               <button
                 onClick={() => setSelectedConvId(null)}
@@ -323,7 +353,13 @@ export default function Home() {
                 ● Live
               </button>
             )}
-            {conversations.map(conv => (
+            {conversationsLoading && !isLive && (
+              <span className={`text-xs ${textMuted}`}>Loading conversations…</span>
+            )}
+            {conversationsError && !isLive && (
+              <span className="text-xs text-red-400">{conversationsError}</span>
+            )}
+            {conversations.filter(c => c.turns > 0).map(conv => (
               <button
                 key={conv.id}
                 onClick={() => setSelectedConvId(conv.id)}
@@ -528,6 +564,15 @@ export default function Home() {
           </div>
         )}
       </div>
+      </div>
+
+      {/* Footer: Conversation counter */}
+      {(baselineConvs.length > 0 || scaledownConvs.length > 0) && (
+        <div className={`${sideBg} border-t ${border} px-6 py-3 text-xs ${textSub} flex items-center justify-between shrink-0`}>
+          <span>Total conversations: <span className="font-semibold text-white">{baselineConvs.length + scaledownConvs.length}</span></span>
+          <span>Baseline: <span className="text-gray-400">{baselineConvs.length}</span> | ScaleDown: <span className="text-cyan-400">{scaledownConvs.length}</span></span>
+        </div>
+      )}
     </main>
   );
 }
