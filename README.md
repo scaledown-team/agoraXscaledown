@@ -1,4 +1,4 @@
-# Agora × ScaleDown — Real-Time Voice AI with Context Compression
+# Agora × ScaleDown : Real-Time Voice AI with Context Compression
 
 
 
@@ -205,30 +205,6 @@ src/
     ├── supabase.ts               # Supabase client
     └── utils.ts                  # Token estimation helpers
 ```
-
----
-
-## How the Compression Works
-
-Every time the Agora agent calls the LLM (i.e. after each user utterance), it POSTs to `/api/llm-proxy` with the full message history so far. The proxy:
-
-1. **Estimates** the token count of the current context (`estimateTokens`)
-2. **Calls ScaleDown** `/compress/raw/` with `rate: "0.5"` — ScaleDown semantically condenses the conversation history while preserving meaning
-3. **Logs** `originalTokens`, `compressedTokens`, `compressionRatio`, and `latencyMs` to Supabase
-4. **Forwards** the compressed messages to Groq for the actual LLM response
-5. **Returns** Groq's response to Agora — which sends it to Cartesia for TTS
-
-The Agora agent has no idea compression happened. It just gets a response faster and cheaper.
-
----
-
-## Why This Matters for Agora
-
-Agora's Conversational AI product gives developers everything they need to build real-time voice agents. The one thing it doesn't control is how expensive the LLM calls get as conversations grow.
-
-ScaleDown plugs in at exactly the right layer, between the agent orchestration and the LLM endpoint and makes long conversations just as affordable as short ones.
-
-For Agora customers building customer support bots, voice assistants, or interactive AI companions, this is the difference between a product that scales economically and one that doesn't.
 
 ---
 
