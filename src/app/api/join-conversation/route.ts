@@ -17,10 +17,13 @@ import { resetTurnCounter } from "@/lib/scaledown";
  */
 export async function POST(req: NextRequest) {
   try {
-    const { channelName, token, uid, botUid } = await req.json();
+    const { channelName, token, uid, botUid, requestedMode } = await req.json();
 
     const appId = process.env.NEXT_PUBLIC_AGORA_APP_ID;
-    const isBaseline = process.env.BASELINE_MODE === "true";
+    // Allow UI to override BASELINE_MODE env var for live mode switching
+    const isBaseline = requestedMode !== undefined
+      ? requestedMode === "baseline"
+      : process.env.BASELINE_MODE === "true";
 
     if (!appId) {
       return NextResponse.json(
