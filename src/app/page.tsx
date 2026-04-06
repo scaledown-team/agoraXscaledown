@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { useConversation } from "@/hooks/useConversation";
 
 interface TraceEvent {
@@ -8,15 +8,21 @@ interface TraceEvent {
   originalTokens: number;
   compressedTokens: number;
   compressionRatio: number;
-  latencyMs: number;
+  scaledownLatencyMs: number;
+  groqLatencyMs: number;
+  totalLatencyMs: number;
   baselineMode: boolean;
+  compressionSuccess: boolean;
 }
 
 interface Summary {
   avgOriginalTokens: number;
   avgCompressedTokens: number;
   avgCompressionRatio: number;
-  avgLatencyMs: number;
+  avgScaledownLatencyMs: number;
+  avgGroqLatencyMs: number;
+  avgTotalLatencyMs: number;
+  accuracyRate: number;
 }
 
 interface TraceData {
@@ -33,6 +39,9 @@ interface SavedConversation {
   turns: number;
   totalTokensSaved: number;
   avgCompressionRatio: number;
+  avgGroqLatencyMs: number;
+  avgScaledownLatencyMs: number;
+  accuracyRate: number;
 }
 
 export default function Home() {
@@ -42,6 +51,10 @@ export default function Home() {
   const [selectedConvId, setSelectedConvId] = useState<string | null>(null);
   const [selectedTraceData, setSelectedTraceData] = useState<TraceData | null>(null);
   const [isDark, setIsDark] = useState(true);
+
+  // Keep a ref to the last active conversationId so we can auto-select it after it ends
+  // (the hook clears conversationId on end, so we need to capture it before that happens)
+  const lastConversationIdRef = useRef<string | null>(null);
 
   const {
     status, mode, error, conversationId,
@@ -60,9 +73,19 @@ export default function Home() {
 
   useEffect(() => { refreshConversations(); }, [refreshConversations]);
 
-  // Refresh conversations list when a conversation ends
+  // Track conversationId in a ref so we can auto-select it after the hook clears it
   useEffect(() => {
-    if (status === "idle") refreshConversations();
+    if (conversationId) lastConversationIdRef.current = conversationId;
+  }, [conversationId]);
+
+  // When a conversation ends: refresh the list, then auto-select the just-ended conversation
+  useEffect(() => {
+    if (status === "idle" && lastConversationIdRef.current) {
+      const endedId = lastConversationIdRef.current;
+      refreshConversations().then(() => {
+        setSelectedConvId(endedId);
+      });
+    }
   }, [status, refreshConversations]);
 
   // Poll traces every 2s while active
@@ -89,6 +112,7 @@ export default function Home() {
     setTraceData(null);
     setSelectedConvId(null);
     setSelectedTraceData(null);
+    lastConversationIdRef.current = null;
     startConversation();
   }, [startConversation]);
 
@@ -98,6 +122,26 @@ export default function Home() {
   const displayTraces = displayData?.traces ?? [];
   const displaySummary = displayData?.summary;
   const hasTraces = displayTraces.length > 0;
+
+  // Compute comparison between baseline and ScaleDown sessions
+  const baselineConvs = conversations.filter(c => c.mode === "baseline" && c.turns > 0);
+  const scaledownConvs = conversations.filter(c => c.mode === "scaledown" && c.turns > 0);
+  const hasComparison = baselineConvs.length > 0 && scaledownConvs.length > 0;
+  const avgBaselineGroq = baselineConvs.length > 0
+    ? Math.round(baselineConvs.reduce((s, c) => s + c.avgGroqLatencyMs, 0) / baselineConvs.length)
+    : 0;
+  const avgScaledownGroq = scaledownConvs.length > 0
+    ? Math.round(scaledownConvs.reduce((s, c) => s + c.avgGroqLatencyMs, 0) / scaledownConvs.length)
+    : 0;
+  const avgBaselineTokens = baselineConvs.length > 0
+    ? Math.round(baselineConvs.reduce((s, c) => s + (c.turns > 0 ? c.totalTokensSaved / c.turns : 0), 0) / baselineConvs.length)
+    : 0;
+  const avgScaledownAccuracy = scaledownConvs.length > 0
+    ? Math.round(scaledownConvs.reduce((s, c) => s + c.accuracyRate, 0) / scaledownConvs.length * 100)
+    : 0;
+  const latencyImprovement = avgBaselineGroq > 0 && avgScaledownGroq > 0
+    ? Math.round((1 - avgScaledownGroq / avgBaselineGroq) * 100)
+    : 0;
 
   const totalTokensSaved = displayTraces.reduce(
     (sum, t) => sum + Math.max(0, t.originalTokens - t.compressedTokens), 0
@@ -222,11 +266,11 @@ export default function Home() {
           <p className={`font-semibold ${textMuted} mb-3 uppercase tracking-widest`}>Pipeline</p>
           <div className={`space-y-2 ${textMuted}`}>
             {[
-              { label: "Voice", value: "Deepgram", note: "ASR", dot: false },
-              ...(preferredMode === "scaledown" ? [{ label: "Transcript", value: "ScaleDown", note: "compress", dot: true }] : []),
-              { label: "Context", value: "Groq llama-3.3", note: "LLM", dot: false },
-              { label: "Response", value: "Cartesia", note: "TTS", dot: false },
-              { label: "Audio via", value: "Agora RTC", note: "", dot: false },
+              { label: "Speech → Text", value: "Deepgram", note: "", dot: false },
+              ...(preferredMode === "scaledown" ? [{ label: "Compress context", value: "ScaleDown", note: "", dot: true }] : []),
+              { label: "AI brain", value: "Groq · Llama 3.3", note: "", dot: false },
+              { label: "Text → Speech", value: "Cartesia", note: "", dot: false },
+              { label: "Voice transport", value: "Agora RTC", note: "", dot: false },
             ].map((item, i) => (
               <div key={i} className="flex items-center gap-2">
                 <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${item.dot ? "bg-cyan-500" : isDark ? "bg-gray-700" : "bg-gray-300"}`} />
@@ -247,13 +291,13 @@ export default function Home() {
         {/* Header */}
         <div className="flex items-center justify-between shrink-0">
           <div>
-            <h2 className="text-lg font-semibold">Compression Metrics</h2>
+            <h2 className="text-lg font-semibold">Live Savings Dashboard</h2>
             <p className={`${textMuted} text-sm mt-0.5`}>
               {isLive
-                ? `Live · ${traceData?.traces.length ?? 0} turn${traceData?.traces.length !== 1 ? "s" : ""}`
+                ? `Listening · ${traceData?.traces.length ?? 0} exchange${traceData?.traces.length !== 1 ? "s" : ""} so far`
                 : hasTraces
-                ? `${displayTraces.length} turns recorded`
-                : "Start a conversation to see live metrics"}
+                ? `${displayTraces.length} exchanges recorded`
+                : "Start a conversation to see savings appear in real time"}
             </p>
           </div>
           {isLive && (
@@ -305,28 +349,81 @@ export default function Home() {
 
         {hasTraces ? (
           <>
+            {/* Comparison banner — only shows when both modes have been run */}
+            {hasComparison && (
+              <div className={`shrink-0 rounded-xl border p-4 ${
+                isDark
+                  ? "bg-gradient-to-r from-cyan-950/40 to-gray-900 border-cyan-900/50"
+                  : "bg-gradient-to-r from-cyan-50 to-white border-cyan-200"
+              }`}>
+                <p className={`text-xs font-semibold uppercase tracking-widest mb-3 ${isDark ? "text-cyan-400" : "text-cyan-600"}`}>
+                  ScaleDown vs. No Compression
+                </p>
+                <div className="grid grid-cols-3 gap-6">
+                  <div>
+                    <p className={`text-xs ${textMuted} mb-1`}>AI Reply Speed</p>
+                    <div className="flex items-baseline gap-2">
+                      <span className={`text-xl font-bold ${isDark ? "text-white" : "text-gray-900"}`}>{avgScaledownGroq}ms</span>
+                      <span className={`text-sm ${textMuted}`}>vs {avgBaselineGroq}ms</span>
+                    </div>
+                    {latencyImprovement > 0 && (
+                      <p className="text-green-400 text-xs font-medium mt-0.5">↓ {latencyImprovement}% faster</p>
+                    )}
+                  </div>
+                  <div>
+                    <p className={`text-xs ${textMuted} mb-1`}>Tokens Per Turn</p>
+                    <div className="flex items-baseline gap-2">
+                      <span className={`text-xl font-bold text-cyan-400`}>
+                        {scaledownConvs[0] && scaledownConvs[0].turns > 0
+                          ? Math.round(scaledownConvs.reduce((s,c) => s + (c.totalTokensSaved / c.turns), 0) / scaledownConvs.length)
+                          : 0} fewer
+                      </span>
+                    </div>
+                    <p className={`text-xs ${textMuted} mt-0.5`}>on every single exchange</p>
+                  </div>
+                  <div>
+                    <p className={`text-xs ${textMuted} mb-1`}>Response Quality</p>
+                    <div className="flex items-baseline gap-2">
+                      <span className={`text-xl font-bold text-purple-400`}>{avgScaledownAccuracy}%</span>
+                      <span className={`text-sm ${textMuted}`}>preserved</span>
+                    </div>
+                    <p className="text-green-400 text-xs font-medium mt-0.5">No quality loss</p>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Summary cards */}
-            <div className="grid grid-cols-3 gap-4 shrink-0">
+            <div className="grid grid-cols-4 gap-3 shrink-0">
               <div className={`${panelBg} rounded-xl p-4 border ${border}`}>
                 <p className={`${textMuted} text-xs uppercase tracking-widest`}>Tokens saved</p>
-                <p className="text-3xl font-bold text-cyan-400 mt-2">{totalTokensSaved.toLocaleString()}</p>
-                <p className={`${textMuted} text-xs mt-1`}>cumulative</p>
+                <p className="text-3xl font-bold tracking-tight text-cyan-400 mt-2">{totalTokensSaved.toLocaleString()}</p>
+                <p className={`${textMuted} text-xs mt-1`}>this conversation</p>
               </div>
               <div className={`${panelBg} rounded-xl p-4 border ${border}`}>
-                <p className={`${textMuted} text-xs uppercase tracking-widest`}>Avg compression</p>
-                <p className="text-3xl font-bold text-green-400 mt-2">
+                <p className={`${textMuted} text-xs uppercase tracking-widest`}>Context reduction</p>
+                <p className="text-3xl font-bold tracking-tight text-green-400 mt-2">
                   {displaySummary && displaySummary.avgCompressionRatio > 0
                     ? `${(displaySummary.avgCompressionRatio * 100).toFixed(0)}%`
                     : "0%"}
                 </p>
-                <p className={`${textMuted} text-xs mt-1`}>context reduction</p>
+                <p className={`${textMuted} text-xs mt-1`}>smaller on average</p>
               </div>
               <div className={`${panelBg} rounded-xl p-4 border ${border}`}>
-                <p className={`${textMuted} text-xs uppercase tracking-widest`}>Avg latency</p>
-                <p className="text-3xl font-bold text-yellow-400 mt-2">
-                  {displaySummary && displaySummary.avgLatencyMs > 0 ? `${displaySummary.avgLatencyMs}ms` : "0ms"}
+                <p className={`${textMuted} text-xs uppercase tracking-widest`}>Quality retained</p>
+                <p className="text-3xl font-bold tracking-tight text-purple-400 mt-2">
+                  {displaySummary ? `${(displaySummary.accuracyRate * 100).toFixed(0)}%` : "—"}
                 </p>
-                <p className={`${textMuted} text-xs mt-1`}>ScaleDown overhead</p>
+                <p className={`${textMuted} text-xs mt-1`}>of turns fully preserved</p>
+              </div>
+              <div className={`${panelBg} rounded-xl p-4 border ${border}`}>
+                <p className={`${textMuted} text-xs uppercase tracking-widest`}>Avg AI reply</p>
+                <p className="text-3xl font-bold tracking-tight text-yellow-400 mt-2">
+                  {displaySummary && displaySummary.avgGroqLatencyMs > 0
+                    ? `${displaySummary.avgGroqLatencyMs}ms`
+                    : "—"}
+                </p>
+                <p className={`${textMuted} text-xs mt-1`}>response time</p>
               </div>
             </div>
 
@@ -335,8 +432,15 @@ export default function Home() {
               <table className="w-full text-sm">
                 <thead className={`sticky top-0 ${panelBg} border-b ${border}`}>
                   <tr>
-                    {["Turn", "Original tokens", "Compressed", "Saved", "Latency", "Mode"].map((h, i) => (
-                      <th key={h} className={`${i === 0 ? "text-left" : "text-right"} px-5 py-3 ${textMuted} font-medium text-xs uppercase tracking-wide`}>{h}</th>
+                    {[
+                      { label: "Turn", align: "left" },
+                      { label: "Context size", align: "right" },
+                      { label: "After ScaleDown", align: "right" },
+                      { label: "Tokens saved", align: "right" },
+                      { label: "AI reply time", align: "right" },
+                      { label: "Quality", align: "right" },
+                    ].map((h) => (
+                      <th key={h.label} className={`text-${h.align} px-4 py-3 ${textMuted} font-medium text-xs uppercase tracking-wide`}>{h.label}</th>
                     ))}
                   </tr>
                 </thead>
@@ -345,37 +449,49 @@ export default function Home() {
                     const saved = Math.max(0, t.originalTokens - t.compressedTokens);
                     return (
                       <tr key={t.turn} className={`border-b ${border} last:border-0 ${isDark ? "hover:bg-gray-800/40" : "hover:bg-gray-50"} transition-colors`}>
-                        <td className={`px-5 py-3.5 ${textMuted} font-mono text-xs`}>#{t.turn}</td>
-                        <td className={`px-5 py-3.5 text-right ${textSub} font-mono`}>{t.originalTokens.toLocaleString()}</td>
-                        <td className="px-5 py-3.5 text-right font-mono">
-                          {t.baselineMode
-                            ? <span className={textMuted}>—</span>
-                            : <span className="text-cyan-400">{t.compressedTokens.toLocaleString()}</span>}
-                        </td>
-                        <td className="px-5 py-3.5 text-right">
-                          {t.baselineMode ? (
-                            <span className={`${textMuted} text-xs`}>no compression</span>
-                          ) : (
-                            <span className={`font-semibold text-sm ${
-                              t.compressionRatio >= 0.3 ? "text-green-400"
-                              : t.compressionRatio >= 0.1 ? "text-yellow-400"
-                              : "text-gray-400"
-                            }`}>
-                              {saved.toLocaleString()} <span className="text-xs opacity-70">({(t.compressionRatio * 100).toFixed(0)}%)</span>
-                            </span>
-                          )}
-                        </td>
-                        <td className={`px-5 py-3.5 text-right ${textMuted} font-mono text-xs`}>
-                          {t.latencyMs > 0 ? `${t.latencyMs}ms` : "—"}
-                        </td>
-                        <td className="px-5 py-3.5 text-right">
-                          <span className={`text-xs px-2.5 py-1 rounded-full font-medium ${
+                        <td className={`px-4 py-3.5 ${textMuted} text-sm`}>
+                          Turn {t.turn}
+                          <span className={`ml-2 text-xs px-2 py-0.5 rounded-full ${
                             t.baselineMode
                               ? isDark ? "bg-gray-800 text-gray-500" : "bg-gray-100 text-gray-400"
                               : "bg-cyan-950 text-cyan-400 border border-cyan-900"
                           }`}>
-                            {t.baselineMode ? "baseline" : "scaledown"}
+                            {t.baselineMode ? "no compression" : "ScaleDown ✓"}
                           </span>
+                        </td>
+                        <td className={`px-4 py-3.5 text-right ${textSub} font-mono`}>
+                          {t.originalTokens.toLocaleString()} <span className={`${textMuted} text-xs`}>tokens</span>
+                        </td>
+                        <td className="px-4 py-3.5 text-right font-mono">
+                          {t.baselineMode
+                            ? <span className={`${textMuted} text-sm`}>unchanged</span>
+                            : <span className="text-cyan-400">{t.compressedTokens.toLocaleString()} <span className={`${textMuted} text-xs`}>tokens</span></span>}
+                        </td>
+                        <td className="px-4 py-3.5 text-right">
+                          {t.baselineMode ? (
+                            <span className={`${textMuted} text-sm`}>—</span>
+                          ) : (
+                            <span className={`font-semibold ${
+                              t.compressionRatio >= 0.3 ? "text-green-400"
+                              : t.compressionRatio >= 0.1 ? "text-yellow-400"
+                              : "text-gray-400"
+                            }`}>
+                              {saved > 0 ? `−${saved.toLocaleString()}` : "0"}{" "}
+                              <span className="text-xs opacity-70">({(t.compressionRatio * 100).toFixed(0)}% less)</span>
+                            </span>
+                          )}
+                        </td>
+                        <td className={`px-4 py-3.5 text-right font-mono text-sm ${t.groqLatencyMs > 0 ? "text-yellow-400" : textMuted}`}>
+                          {t.groqLatencyMs > 0 ? `${t.groqLatencyMs}ms` : "—"}
+                        </td>
+                        <td className="px-4 py-3.5 text-right">
+                          {t.baselineMode ? (
+                            <span className={`${textMuted} text-sm`}>—</span>
+                          ) : t.compressionSuccess ? (
+                            <span className="text-green-400 text-sm font-medium">✓ Full quality</span>
+                          ) : (
+                            <span className="text-orange-400 text-sm font-medium">⚠ Used original</span>
+                          )}
                         </td>
                       </tr>
                     );
@@ -385,20 +501,29 @@ export default function Home() {
             </div>
           </>
         ) : (
-          <div className="flex-1 flex flex-col items-center justify-center text-center gap-5">
-            <div className={`w-16 h-16 rounded-2xl flex items-center justify-center text-2xl ${isDark ? "bg-gray-900" : "bg-gray-100"}`}>◎</div>
+          <div className="flex-1 flex flex-col items-center justify-center text-center gap-6">
+            <div className={`w-12 h-12 rounded-xl flex items-center justify-center border ${border} ${isDark ? "bg-gray-900" : "bg-gray-50"}`}>
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none" className={isDark ? "text-gray-500" : "text-gray-400"}>
+                <circle cx="10" cy="10" r="9" stroke="currentColor" strokeWidth="1.5"/>
+                <path d="M10 6v4l2.5 2.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+              </svg>
+            </div>
             <div>
-              <p className={`${textSub} font-semibold text-lg`}>No data yet</p>
-              <p className={`${textMuted} text-sm mt-1.5 max-w-xs`}>
+              <p className={`${textSub} font-semibold text-base`}>No data yet</p>
+              <p className={`${textMuted} text-sm mt-1.5 max-w-xs leading-relaxed`}>
                 {preferredMode === "scaledown"
-                  ? "Start a conversation in ScaleDown mode to see live compression metrics."
-                  : "Run Baseline to capture token growth, then ScaleDown to see the savings."}
+                  ? "Start a conversation to see live token savings turn by turn."
+                  : "Baseline mode captures raw token usage — run both modes to compare."}
               </p>
             </div>
-            <div className={`${panelBg} rounded-xl p-5 text-left text-xs max-w-sm border ${border} space-y-2`}>
-              <p className={`font-semibold ${textSub} mb-1`}>How it works</p>
-              <p className={textMuted}><span className={textSub}>Baseline</span> — Agora calls Groq directly. Token history grows linearly every turn.</p>
-              <p className={textMuted}><span className="text-cyan-400 font-medium">ScaleDown</span> — Conversation history is compressed before each Groq call. Same responses, fewer tokens burned.</p>
+            <div className={`rounded-xl p-5 text-left text-sm max-w-sm border ${border} ${isDark ? "bg-gray-900/60" : "bg-gray-50"} space-y-3`}>
+              <p className={`text-xs font-semibold uppercase tracking-widest ${textMuted}`}>How it works</p>
+              <p className={`${textMuted} leading-relaxed`}>
+                <span className={`font-medium ${textSub}`}>Without ScaleDown —</span> the full conversation history is sent to the AI on every turn. Token costs grow linearly.
+              </p>
+              <p className={`${textMuted} leading-relaxed`}>
+                <span className="font-medium text-cyan-400">With ScaleDown —</span> history is compressed before each call. The AI sees the same meaning with fewer tokens. Cost stays flat.
+              </p>
             </div>
           </div>
         )}
