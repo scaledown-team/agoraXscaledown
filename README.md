@@ -1,8 +1,8 @@
 # Agora × ScaleDown — Real-Time Voice AI with Context Compression
 
-> **"Every LLM call your users make grows the context window. ScaleDown makes that growth disappear."**
 
-This is a live proof-of-concept built for Agora: a real-time voice AI demo where ScaleDown compresses the growing conversation history before every LLM call — proving flat token usage vs. the linear growth that happens today.
+
+This is a live proof-of-concept built for Agora: a real-time voice AI demo where ScaleDown compresses the growing conversation history before every LLM call, proving flat token usage vs. the linear growth that happens today.
 
 ---
 
@@ -66,22 +66,6 @@ User (microphone)
 ScaleDown sits invisibly between Agora's agent and the LLM. Agora sees it as a standard OpenAI-compatible endpoint. The compression is transparent to everything else in the pipeline.
 
 ---
-
-## Live Dashboard
-
-The demo UI shows real-time compression metrics for every conversation:
-
-| Metric | What it means |
-|--------|--------------|
-| **Tokens Saved** | Total tokens eliminated across all turns in this conversation |
-| **Avg Compression** | Average compression ratio (e.g. 0.72 = 28% reduction per turn) |
-| **Avg Latency** | ScaleDown compression overhead per turn (typically 600–900ms) |
-| **Turn-by-turn chart** | Original vs compressed tokens, plotted as the conversation grows |
-
-Two modes are supported:
-- **ScaleDown mode** — context is compressed before every LLM call
-- **Baseline mode** — no compression; raw token counts logged for direct A/B comparison
-
 ---
 
 ## Tech Stack
@@ -242,7 +226,7 @@ The Agora agent has no idea compression happened. It just gets a response faster
 
 Agora's Conversational AI product gives developers everything they need to build real-time voice agents. The one thing it doesn't control is how expensive the LLM calls get as conversations grow.
 
-ScaleDown plugs in at exactly the right layer — between the agent orchestration and the LLM endpoint — and makes long conversations just as affordable as short ones.
+ScaleDown plugs in at exactly the right layer, between the agent orchestration and the LLM endpoint and makes long conversations just as affordable as short ones.
 
 For Agora customers building customer support bots, voice assistants, or interactive AI companions, this is the difference between a product that scales economically and one that doesn't.
 
@@ -253,5 +237,3 @@ For Agora customers building customer support bots, voice assistants, or interac
 [ScaleDown AI](https://scaledown.xyz) — context compression for production LLM applications.
 
 ---
-
-*This is a live demo, not a production deployment. All conversations are stored in Supabase and visible in the dashboard.*
