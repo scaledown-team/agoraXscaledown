@@ -170,7 +170,7 @@ export default function Home() {
         <div className="mt-auto bg-gray-900 rounded-xl p-4 text-xs">
           <p className="font-semibold text-gray-400 mb-2 text-xs uppercase tracking-widest">Pipeline</p>
           <div className="text-gray-500 space-y-1 leading-relaxed">
-            <p>Voice  Deepgram (ASR)</p>
+            <p>Voice <span className="text-gray-300">Deepgram</span> (ASR)</p>
             {preferredMode === "scaledown" && (
               <p> Transcript  <span className="text-cyan-400 font-semibold">ScaleDown</span> (compress)</p>
             )}
