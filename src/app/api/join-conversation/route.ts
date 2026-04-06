@@ -6,7 +6,7 @@ import { resetTurnCounter } from "@/lib/scaledown";
  * POST /api/join-conversation
  *
  * Invites the Agora Conversational AI agent into the voice channel.
- * Configures ASR (Deepgram), TTS (ElevenLabs), and LLM (Groq).
+ * Configures ASR (Deepgram), TTS (Cartesia), and LLM (Groq).
  *
  * KEY INTEGRATION POINT:
  * In ScaleDown mode, the LLM URL points to our /api/llm-proxy route.
@@ -50,11 +50,11 @@ export async function POST(req: NextRequest) {
     const requestBody = {
       name: `agent_${Date.now()}`,
       properties: {
-        // Channel config — flat fields, NOT nested in a channel object
         channel: channelName,
         token: token,
-        agent_rtc_uid: String(botUid),
+        agent_rtc_uid: "0",             // "0" = Agora auto-assigns UID
         remote_rtc_uids: [String(uid)],
+        enable_string_uid: false,
         idle_timeout: 120,
 
         // LLM configuration
@@ -68,68 +68,42 @@ export async function POST(req: NextRequest) {
                 "You are a helpful voice AI assistant. Keep responses concise and conversational since this is a real-time voice conversation. Be natural and friendly.",
             },
           ],
-          max_history: 20,
-          greeting_configs: {
-            mode: "single_every",
-            greeting_message: "Hello! How can I help you today?",
-          },
-          failure_message:
-            "I'm sorry, I'm having trouble processing that. Could you try again?",
+          greeting_message: "Hello! How can I help you today?",
+          failure_message: "I'm sorry, I'm having trouble with that. Could you try again?",
+          max_history: 10,
           params: {
             model: model,
           },
         },
 
-        // TTS configuration — ElevenLabs
+        // TTS configuration — Cartesia
         tts: {
-          vendor: "elevenlabs",
+          vendor: "cartesia",
           params: {
-            api_key: process.env.ELEVENLABS_API_KEY || "",
-            model_id: "eleven_turbo_v2_5",
-            voice_id: "21m00Tcm4TlvDq8ikWAM", // Rachel — swap as needed
+            api_key: process.env.CARTESIA_API_KEY || "",
+            model_id: "sonic-2",
+            base_url: "wss://api.cartesia.ai",
+            voice: {
+              mode: "id",
+              id: process.env.CARTESIA_VOICE_ID || "f786b574-daa5-4673-aa0c-cbe3e8534c02",
+            },
+            output_format: {
+              container: "raw",
+              sample_rate: 16000,
+            },
+            language: "en",
           },
         },
 
-        // ASR configuration — Deepgram
+        // ASR configuration — Deepgram via Agora ConvAI
         asr: {
           vendor: "deepgram",
-          language: "en-US",
           params: {
-            api_key: process.env.DEEPGRAM_API_KEY || "",
-            model: "nova-3",
+            url: "wss://api.deepgram.com/v1/listen",
+            key: process.env.DEEPGRAM_API_KEY || "",
+            model: "nova-2",
+            language: "en-US",
           },
-        },
-
-        // Advanced features
-        advanced_features: {
-          enable_rtm: true,
-        },
-
-        // Turn detection (VAD)
-        turn_detection: {
-          mode: "default",
-          config: {
-            speech_threshold: 0.5,
-            start_of_speech: {
-              mode: "vad",
-              vad_config: {
-                interrupt_duration_ms: 160,
-                prefix_padding_ms: 800,
-              },
-            },
-            end_of_speech: {
-              mode: "vad",
-              vad_config: {
-                silence_duration_ms: 640,
-              },
-            },
-          },
-        },
-
-        // Parameters
-        parameters: {
-          data_channel: "rtm",
-          enable_metrics: true,
         },
       },
     };
@@ -146,6 +120,8 @@ export async function POST(req: NextRequest) {
         body: JSON.stringify(requestBody),
       }
     );
+
+    console.log("[join-conversation] Request body sent to Agora:", JSON.stringify(requestBody, null, 2));
 
     if (!response.ok) {
       const errorData = await response.text();
