@@ -23,25 +23,38 @@ export async function POST(req: NextRequest) {
     const channelName = generateChannelName();
     const uid = generateUid();
     const botUid = parseInt(process.env.NEXT_PUBLIC_AGORA_BOT_UID || "1001");
-    const expirationTimeInSeconds = 3600; // 1 hour
-    const currentTimestamp = Math.floor(Date.now() / 1000);
-    const privilegeExpiredTs = currentTimestamp + expirationTimeInSeconds;
+    // agora-token v2: tokenExpire and privilegeExpire are in SECONDS from now (not Unix timestamps)
+    const tokenExpire = 3600;     // token valid for 1 hour
+    const privilegeExpire = 3600; // privileges valid for 1 hour
 
-    // Generate token for the user
-    // buildTokenWithUid takes 6 args: appId, appCertificate, channelName, uid, role, privilegeExpiredTs
+    // Generate token for the user (to join RTC channel)
     const token = RtcTokenBuilder.buildTokenWithUid(
       appId,
       appCertificate,
       channelName,
       uid,
       RtcRole.PUBLISHER,
-      privilegeExpiredTs
+      tokenExpire,
+      privilegeExpire
+    );
+
+    // Generate a separate token for the bot/agent
+    // uid=0 is a wildcard token that works for any auto-assigned UID
+    const botToken = RtcTokenBuilder.buildTokenWithUid(
+      appId,
+      appCertificate,
+      channelName,
+      0,
+      RtcRole.PUBLISHER,
+      tokenExpire,
+      privilegeExpire
     );
 
     return NextResponse.json({
       appId,
       channelName,
       token,
+      botToken,
       uid,
       botUid,
     });
