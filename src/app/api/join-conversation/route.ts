@@ -37,16 +37,14 @@ export async function POST(req: NextRequest) {
     // Reset turn counter for new conversation
     resetTurnCounter();
 
-    // Determine LLM endpoint:
-    // - Baseline mode: point directly to Groq
-    // - ScaleDown mode: point to our proxy that compresses first
+    // Both modes route through our proxy so token counts are logged for A/B comparison.
+    // Baseline uses ?baseline=true so the proxy skips ScaleDown but still records metrics.
+    const proxyBase = getProxyBaseUrl(req);
     const llmUrl = isBaseline
-      ? `${process.env.LLM_BASE_URL}/chat/completions`
-      : `${getProxyBaseUrl(req)}/api/llm-proxy`;
+      ? `${proxyBase}/api/llm-proxy?baseline=true`
+      : `${proxyBase}/api/llm-proxy`;
 
-    const llmApiKey = isBaseline
-      ? process.env.LLM_API_KEY
-      : "proxy-internal"; // proxy handles auth with Groq internally
+    const llmApiKey = "proxy-internal"; // proxy handles Groq auth internally
 
     const model = process.env.LLM_MODEL || "llama-3.3-70b-versatile";
 

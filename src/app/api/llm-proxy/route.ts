@@ -27,10 +27,11 @@ export async function POST(req: NextRequest) {
     const model = body.model || process.env.LLM_MODEL || "llama-3.3-70b-versatile";
     const stream = body.stream ?? false;
 
-    // ---- STEP 1: Compress with ScaleDown ----
+    // ---- STEP 1: Compress with ScaleDown (or pass-through in baseline) ----
     // compressContext handles logging the trace internally via logTrace()
+    const isBaseline = req.nextUrl.searchParams.get("baseline") === "true";
     const { messages: compressedMessages, originalTokens, compressedTokens } =
-      await compressContext(messages, { targetModel: model });
+      await compressContext(messages, { targetModel: model, baseline: isBaseline });
 
     console.log(
       `[LLM Proxy] Compressed ${originalTokens} -> ${compressedTokens} tokens ` +
