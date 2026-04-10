@@ -6,30 +6,6 @@ This is a live proof-of-concept built for Agora: a real-time voice AI demo where
 
 ---
 
-## What This Demo Proves
-
-In a standard voice AI conversation, the context window grows with every turn:
-
-```
-Turn 1:  ~200 tokens  →  LLM call
-Turn 2:  ~400 tokens  →  LLM call
-Turn 3:  ~600 tokens  →  LLM call
-Turn N:  ~N×200 tokens → LLM call   ← this is your cost
-```
-
-With ScaleDown:
-
-```
-Turn 1:  ~200 tokens  →  compress  →  ~140 tokens  →  LLM call
-Turn 2:  ~400 tokens  →  compress  →  ~200 tokens  →  LLM call
-Turn 3:  ~600 tokens  →  compress  →  ~260 tokens  →  LLM call
-Turn N:  flat growth, not linear   ← this is your cost with ScaleDown
-```
-
-The dashboard shows this compression happening **live**, turn by turn, with real token counts.
-
----
-
 ## Architecture
 
 ```
@@ -182,7 +158,7 @@ Copy the `https://` URL into your `.env.local` as `PROXY_BASE_URL`, then restart
 
 ## Project Structure
 
-```
+``` 
 src/
 ├── app/
 │   ├── api/
