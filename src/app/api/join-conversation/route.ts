@@ -48,7 +48,9 @@ export async function POST(req: NextRequest) {
       .single();
 
     if (convError) {
-      console.error("[Supabase] Failed to create conversation:", convError.message);
+      console.error("[Supabase] Failed to create conversation:", convError.message, convError.details, convError.hint);
+    } else {
+      console.log("[Supabase] Created conversation:", convData?.id, "mode:", convMode);
     }
 
     const conversationId = convData?.id || "unknown";
