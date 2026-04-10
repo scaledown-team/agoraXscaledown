@@ -89,12 +89,16 @@ export default function Home() {
     if (conversationId) lastConversationIdRef.current = conversationId;
   }, [conversationId]);
 
-  // When a conversation ends: refresh the list, then auto-select the just-ended conversation
+  // When a conversation ends: refresh the list, then auto-select if it has turns
   useEffect(() => {
     if (status === "idle" && lastConversationIdRef.current) {
       const endedId = lastConversationIdRef.current;
       refreshConversations().then(() => {
-        setSelectedConvId(endedId);
+        // Only auto-select if the conversation actually recorded turns
+        setSelectedConvId(prev => {
+          // Will be validated by the conversations list — if no turns, clear selection
+          return endedId;
+        });
       });
     }
   }, [status]);
@@ -133,27 +137,13 @@ export default function Home() {
   const displayTraces = displayData?.traces ?? [];
   const displaySummary = displayData?.summary;
   const hasTraces = displayTraces.length > 0;
+  const selectedConvMode = selectedConvId
+    ? conversations.find(c => c.id === selectedConvId)?.mode
+    : mode; // live conversation mode
 
   // Compute comparison between baseline and ScaleDown sessions
   const baselineConvs = conversations.filter(c => c.mode === "baseline" && c.turns > 0);
   const scaledownConvs = conversations.filter(c => c.mode === "scaledown" && c.turns > 0);
-  const hasComparison = baselineConvs.length > 0 && scaledownConvs.length > 0;
-  const avgBaselineGroq = baselineConvs.length > 0
-    ? Math.round(baselineConvs.reduce((s, c) => s + c.avgGroqLatencyMs, 0) / baselineConvs.length)
-    : 0;
-  const avgScaledownGroq = scaledownConvs.length > 0
-    ? Math.round(scaledownConvs.reduce((s, c) => s + c.avgGroqLatencyMs, 0) / scaledownConvs.length)
-    : 0;
-  const avgBaselineTokens = baselineConvs.length > 0
-    ? Math.round(baselineConvs.reduce((s, c) => s + (c.turns > 0 ? c.totalTokensSaved / c.turns : 0), 0) / baselineConvs.length)
-    : 0;
-  const avgScaledownAccuracy = scaledownConvs.length > 0
-    ? Math.round(scaledownConvs.reduce((s, c) => s + c.accuracyRate, 0) / scaledownConvs.length * 100)
-    : 0;
-  const latencyImprovement = avgBaselineGroq > 0 && avgScaledownGroq > 0
-    ? Math.round((1 - avgScaledownGroq / avgBaselineGroq) * 100)
-    : 0;
-
   const totalTokensSaved = displayTraces.reduce(
     (sum, t) => sum + Math.max(0, t.originalTokens - t.compressedTokens), 0
   );
@@ -305,7 +295,7 @@ export default function Home() {
         {/* Header */}
         <div className="flex items-center justify-between shrink-0">
           <div className="flex items-center gap-3">
-            {selectedConvId && (
+            {selectedConvId && conversations.some(c => c.id === selectedConvId) && (
               <button
                 onClick={() => setSelectedConvId(null)}
                 className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
@@ -319,7 +309,9 @@ export default function Home() {
             )}
             <div>
               <h2 className="text-lg font-semibold">
-                {selectedConvId ? `Conversation ${conversations.findIndex(c => c.id === selectedConvId) + 1} of ${conversations.length}` : "Live Savings Dashboard"}
+                {selectedConvId && conversations.find(c => c.id === selectedConvId)
+                  ? conversations.find(c => c.id === selectedConvId)!.label
+                  : "Live Savings Dashboard"}
               </h2>
               <p className={`${textMuted} text-sm mt-0.5`}>
                 {isLive
@@ -338,9 +330,9 @@ export default function Home() {
           )}
         </div>
 
-        {/* Conversation tabs */}
+        {/* Conversation selectors — two dropdowns */}
         {(conversations.length > 0 || isLive || conversationsLoading || conversationsError) && (
-          <div className="flex gap-2 overflow-x-auto pb-0.5 shrink-0 items-center">
+          <div className="flex gap-3 items-center shrink-0 flex-wrap">
             {isLive && (
               <button
                 onClick={() => setSelectedConvId(null)}
@@ -359,77 +351,56 @@ export default function Home() {
             {conversationsError && !isLive && (
               <span className="text-xs text-red-400">{conversationsError}</span>
             )}
-            {conversations.filter(c => c.turns > 0).map(conv => (
-              <button
-                key={conv.id}
-                onClick={() => setSelectedConvId(conv.id)}
-                className={`shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
-                  selectedConvId === conv.id
-                    ? conv.mode === "scaledown"
-                      ? "bg-cyan-900/40 text-cyan-400 border-cyan-800"
-                      : isDark ? "bg-gray-700 text-white border-gray-600" : "bg-white text-gray-900 border-gray-300 shadow-sm"
-                    : `${tabInactive} border-transparent`
-                }`}
-              >
-                {conv.label}
-                <span className={`ml-1.5 ${conv.mode === "scaledown" ? "text-cyan-600" : textMuted}`}>
-                  · {conv.mode === "scaledown" ? "ScaleDown" : "Baseline"}
-                </span>
-                <span className={`ml-1 ${textMuted}`}>
-                  · {conv.turns} turn{conv.turns !== 1 ? "s" : ""}
-                </span>
-              </button>
-            ))}
+            {/* Baseline dropdown */}
+            {baselineConvs.length > 0 && (
+              <div className="flex items-center gap-1.5">
+                <span className={`text-xs font-medium uppercase tracking-widest ${textMuted}`}>Baseline</span>
+                <select
+                  value={selectedConvId && baselineConvs.some(c => c.id === selectedConvId) ? selectedConvId : ""}
+                  onChange={(e) => setSelectedConvId(e.target.value || null)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors cursor-pointer ${
+                    isDark
+                      ? "bg-gray-800 text-gray-300 border-gray-700 hover:border-gray-600"
+                      : "bg-white text-gray-700 border-gray-300 hover:border-gray-400"
+                  }`}
+                >
+                  <option value="">Select...</option>
+                  {baselineConvs.map(conv => (
+                    <option key={conv.id} value={conv.id}>
+                      {conv.label} · {conv.turns} turn{conv.turns !== 1 ? "s" : ""}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {/* ScaleDown dropdown */}
+            {scaledownConvs.length > 0 && (
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs font-medium uppercase tracking-widest text-cyan-500">ScaleDown</span>
+                <select
+                  value={selectedConvId && scaledownConvs.some(c => c.id === selectedConvId) ? selectedConvId : ""}
+                  onChange={(e) => setSelectedConvId(e.target.value || null)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors cursor-pointer ${
+                    isDark
+                      ? "bg-gray-800 text-cyan-400 border-cyan-900 hover:border-cyan-700"
+                      : "bg-white text-cyan-700 border-cyan-300 hover:border-cyan-400"
+                  }`}
+                >
+                  <option value="">Select...</option>
+                  {scaledownConvs.map(conv => (
+                    <option key={conv.id} value={conv.id}>
+                      {conv.label} · {conv.turns} turn{conv.turns !== 1 ? "s" : ""}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
         )}
 
         {hasTraces ? (
           <>
-            {/* Comparison banner — only shows when both modes have been run */}
-            {hasComparison && (
-              <div className={`shrink-0 rounded-xl border p-4 ${
-                isDark
-                  ? "bg-gradient-to-r from-cyan-950/40 to-gray-900 border-cyan-900/50"
-                  : "bg-gradient-to-r from-cyan-50 to-white border-cyan-200"
-              }`}>
-                <p className={`text-xs font-semibold uppercase tracking-widest mb-3 ${isDark ? "text-cyan-400" : "text-cyan-600"}`}>
-                  ScaleDown vs. No Compression
-                </p>
-                <div className="grid grid-cols-3 gap-6">
-                  <div>
-                    <p className={`text-xs ${textMuted} mb-1`}>AI Reply Speed</p>
-                    <div className="flex items-baseline gap-2">
-                      <span className={`text-xl font-bold ${isDark ? "text-white" : "text-gray-900"}`}>{avgScaledownGroq}ms</span>
-                      <span className={`text-sm ${textMuted}`}>vs {avgBaselineGroq}ms</span>
-                    </div>
-                    {latencyImprovement > 0 && (
-                      <p className="text-green-400 text-xs font-medium mt-0.5">↓ {latencyImprovement}% faster</p>
-                    )}
-                  </div>
-                  <div>
-                    <p className={`text-xs ${textMuted} mb-1`}>Tokens Per Turn</p>
-                    <div className="flex items-baseline gap-2">
-                      <span className={`text-xl font-bold text-cyan-400`}>
-                        {scaledownConvs[0] && scaledownConvs[0].turns > 0
-                          ? Math.round(scaledownConvs.reduce((s,c) => s + (c.totalTokensSaved / c.turns), 0) / scaledownConvs.length)
-                          : 0} fewer
-                      </span>
-                    </div>
-                    <p className={`text-xs ${textMuted} mt-0.5`}>on every single exchange</p>
-                  </div>
-                  <div>
-                    <p className={`text-xs ${textMuted} mb-1`}>Response Quality</p>
-                    <div className="flex items-baseline gap-2">
-                      <span className={`text-xl font-bold text-purple-400`}>{avgScaledownAccuracy}%</span>
-                      <span className={`text-sm ${textMuted}`}>preserved</span>
-                    </div>
-                    <p className="text-green-400 text-xs font-medium mt-0.5">No quality loss</p>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Summary cards */}
+            {/* Per-conversation summary cards */}
             <div className="grid grid-cols-4 gap-3 shrink-0">
               <div className={`${panelBg} rounded-xl p-4 border ${border}`}>
                 <p className={`${textMuted} text-xs uppercase tracking-widest`}>Tokens saved</p>
@@ -448,9 +419,13 @@ export default function Home() {
               <div className={`${panelBg} rounded-xl p-4 border ${border}`}>
                 <p className={`${textMuted} text-xs uppercase tracking-widest`}>Quality retained</p>
                 <p className="text-3xl font-bold tracking-tight text-purple-400 mt-2">
-                  {displaySummary ? `${(displaySummary.accuracyRate * 100).toFixed(0)}%` : "—"}
+                  {selectedConvMode === "baseline"
+                    ? "100%"
+                    : displaySummary ? `${(displaySummary.accuracyRate * 100).toFixed(0)}%` : "—"}
                 </p>
-                <p className={`${textMuted} text-xs mt-1`}>of turns fully preserved</p>
+                <p className={`${textMuted} text-xs mt-1`}>
+                  {selectedConvMode === "baseline" ? "no compression applied" : "of turns fully preserved"}
+                </p>
               </div>
               <div className={`${panelBg} rounded-xl p-4 border ${border}`}>
                 <p className={`${textMuted} text-xs uppercase tracking-widest`}>Avg AI reply</p>
@@ -522,7 +497,7 @@ export default function Home() {
                         </td>
                         <td className="px-4 py-3.5 text-right">
                           {t.baselineMode ? (
-                            <span className={`${textMuted} text-sm`}>—</span>
+                            <span className={`${textSub} text-sm font-medium`}>100%</span>
                           ) : t.compressionSuccess ? (
                             <span className="text-green-400 text-sm font-medium">✓ Full quality</span>
                           ) : (
