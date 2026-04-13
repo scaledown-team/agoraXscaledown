@@ -13,6 +13,7 @@ interface TraceEvent {
   totalLatencyMs: number;
   baselineMode: boolean;
   compressionSuccess: boolean;
+  qualityScore?: number | null;
 }
 
 interface Summary {
@@ -22,7 +23,9 @@ interface Summary {
   avgScaledownLatencyMs: number;
   avgGroqLatencyMs: number;
   avgTotalLatencyMs: number;
-  accuracyRate: number;
+  successfulCompressionRate: number;
+  avgQualityScore?: number | null;
+  qualityCoverage?: number;
 }
 
 interface TraceData {
@@ -41,7 +44,10 @@ interface SavedConversation {
   avgCompressionRatio: number;
   avgGroqLatencyMs: number;
   avgScaledownLatencyMs: number;
-  accuracyRate: number;
+  avgTotalLatencyMs?: number;
+  successfulCompressionRate?: number;
+  avgQualityScore?: number | null;
+  qualityCoverage?: number;
 }
 
 interface EvalConvResult {
@@ -56,6 +62,7 @@ interface EvalConvResult {
   avgGroqLatencyMs: number;
   avgScaledownLatencyMs: number;
   avgTotalLatencyMs: number;
+  avgQualityScore?: number | null;
 }
 
 interface EvalModeAgg {
@@ -67,6 +74,9 @@ interface EvalModeAgg {
   compressionPct: number;
   avgGroqLatencyMs: number;
   avgScaledownLatencyMs: number;
+  avgTotalLatencyMs?: number;
+  avgQualityScore?: number | null;
+  qualityCoverage?: number;
 }
 
 interface EvalData {
@@ -76,6 +86,7 @@ interface EvalData {
   comparison: {
     tokenSavingsPct: number;
     latencyDiffMs: number;
+    groqLatencyDiffMs?: number;
     scaledownOverheadMs: number;
   } | null;
   summary: {
@@ -85,6 +96,9 @@ interface EvalData {
     totalTurns: number;
     totalTokensSaved: number;
     overallCompressionPct: number;
+    overallCostSavings?: number;
+    avgQualityScore?: number | null;
+    qualityCoverage?: number;
   };
 }
 
@@ -211,6 +225,7 @@ export default function Home() {
   const totalTokensSaved = displayTraces.reduce(
     (sum, t) => sum + Math.max(0, t.originalTokens - t.compressedTokens), 0
   );
+  const scoredTurns = displayTraces.filter((t) => !t.baselineMode && t.qualityScore != null && t.qualityScore >= 0);
 
   const bg = "bg-gray-950";
   const panelBg = "bg-gray-900";
@@ -396,22 +411,32 @@ export default function Home() {
                     </p>
                   </div>
                   <div className={`${panelBg} rounded-xl p-4 border ${border}`}>
-                    <p className={`${textMuted} text-xs uppercase tracking-widest`}>LLM latency</p>
+                    <p className={`${textMuted} text-xs uppercase tracking-widest`}>End-to-end latency</p>
                     <p className="text-3xl font-bold text-yellow-400 mt-2">
-                      {displaySummary && displaySummary.avgGroqLatencyMs > 0
-                        ? `${displaySummary.avgGroqLatencyMs}ms` : "—"}
-                    </p>
-                    <p className={`${textMuted} text-xs mt-1`}>avg Groq response time</p>
-                  </div>
-                  <div className={`${panelBg} rounded-xl p-4 border ${border}`}>
-                    <p className={`${textMuted} text-xs uppercase tracking-widest`}>Accuracy</p>
-                    <p className="text-3xl font-bold text-green-400 mt-2">
-                      {selectedConvMode === "baseline"
-                        ? "100%"
-                        : `${((displaySummary?.accuracyRate ?? 1) * 100).toFixed(0)}%`}
+                      {displaySummary && displaySummary.avgTotalLatencyMs > 0
+                        ? `${displaySummary.avgTotalLatencyMs}ms` : "—"}
                     </p>
                     <p className={`${textMuted} text-xs mt-1`}>
-                      {selectedConvMode === "baseline" ? "baseline (no compression)" : "compression success"}
+                      {displaySummary
+                        ? `${displaySummary.avgGroqLatencyMs}ms LLM + ${displaySummary.avgScaledownLatencyMs}ms ScaleDown`
+                        : "proxy + model roundtrip"}
+                    </p>
+                  </div>
+                  <div className={`${panelBg} rounded-xl p-4 border ${border}`}>
+                    <p className={`${textMuted} text-xs uppercase tracking-widest`}>Answer fidelity</p>
+                    <p className="text-3xl font-bold text-green-400 mt-2">
+                      {selectedConvMode === "baseline"
+                        ? "Reference"
+                        : displaySummary?.avgQualityScore != null
+                          ? `${((displaySummary.avgQualityScore ?? 0) * 100).toFixed(0)}%`
+                          : "Pending"}
+                    </p>
+                    <p className={`${textMuted} text-xs mt-1`}>
+                      {selectedConvMode === "baseline"
+                        ? "baseline answer stream"
+                        : displaySummary?.avgQualityScore != null
+                          ? `${scoredTurns.length} scored turn${scoredTurns.length === 1 ? "" : "s"} vs shadow baseline`
+                          : "enable SHADOW_BASELINE to score quality"}
                     </p>
                   </div>
                 </div>
@@ -421,7 +446,7 @@ export default function Home() {
                   <table className="w-full text-sm">
                     <thead className={`sticky top-0 ${panelBg} border-b ${border}`}>
                       <tr>
-                        {["Turn", "Context", "After SD", "Saved", "LLM latency", "Status"].map(h => (
+                        {["Turn", "Context", "After SD", "Saved", "Total latency", "Quality / Status"].map(h => (
                           <th key={h} className={`text-left px-4 py-3 ${textMuted} font-medium text-xs uppercase tracking-wide`}>{h}</th>
                         ))}
                       </tr>
@@ -455,14 +480,16 @@ export default function Home() {
                                 </span>
                               )}
                             </td>
-                            <td className={`px-4 py-3 font-mono text-sm ${t.groqLatencyMs > 0 ? "text-yellow-400" : textMuted}`}>
-                              {t.groqLatencyMs > 0 ? `${t.groqLatencyMs}ms` : "—"}
+                            <td className={`px-4 py-3 font-mono text-sm ${t.totalLatencyMs > 0 ? "text-yellow-400" : textMuted}`}>
+                              {t.totalLatencyMs > 0 ? `${t.totalLatencyMs}ms` : "—"}
                             </td>
                             <td className="px-4 py-3 text-sm">
                               {t.baselineMode ? (
-                                <span className={textSub}>baseline</span>
+                                <span className={textSub}>baseline reference</span>
+                              ) : t.qualityScore != null && t.qualityScore >= 0 ? (
+                                <span className="text-green-400">{(t.qualityScore * 100).toFixed(0)}% match</span>
                               ) : t.compressionSuccess ? (
-                                <span className="text-green-400">ok</span>
+                                <span className="text-cyan-400">compressed</span>
                               ) : (
                                 <span className="text-orange-400">fallback</span>
                               )}
@@ -480,7 +507,7 @@ export default function Home() {
                 <p className={`${textMuted} text-sm max-w-xs`}>
                   {preferredMode === "scaledown"
                     ? "Start a conversation to see live token savings."
-                    : "Baseline captures raw usage — run both modes to compare."}
+                    : "Baseline captures raw usage. Run both modes to compare."}
                 </p>
               </div>
             )}
@@ -524,19 +551,27 @@ export default function Home() {
                     <p className={`${textMuted} text-xs mt-1`}>{evalData.summary.totalTokensSaved.toLocaleString()} tokens saved</p>
                   </div>
                   <div className={`${panelBg} rounded-xl p-4 border ${border}`}>
-                    <p className={`${textMuted} text-xs uppercase tracking-widest`}>LLM latency</p>
+                    <p className={`${textMuted} text-xs uppercase tracking-widest`}>End-to-end latency</p>
                     <p className="text-3xl font-bold text-yellow-400 mt-2">
-                      {evalData.scaledown ? `${evalData.scaledown.avgGroqLatencyMs}ms` : "—"}
+                      {evalData.scaledown?.avgTotalLatencyMs ? `${evalData.scaledown.avgTotalLatencyMs}ms` : "—"}
                     </p>
                     <p className={`${textMuted} text-xs mt-1`}>
-                      {evalData.baseline ? `baseline: ${evalData.baseline.avgGroqLatencyMs}ms` : "no baseline yet"}
+                      {evalData.baseline?.avgTotalLatencyMs
+                        ? `baseline: ${evalData.baseline.avgTotalLatencyMs}ms`
+                        : "no baseline yet"}
                     </p>
                   </div>
                   <div className={`${panelBg} rounded-xl p-4 border ${border}`}>
-                    <p className={`${textMuted} text-xs uppercase tracking-widest`}>Conversations</p>
-                    <p className="text-3xl font-bold text-blue-400 mt-2">{evalData.summary.totalConversations}</p>
+                    <p className={`${textMuted} text-xs uppercase tracking-widest`}>Answer fidelity</p>
+                    <p className="text-3xl font-bold text-green-400 mt-2">
+                      {evalData.summary.avgQualityScore != null
+                        ? `${((evalData.summary.avgQualityScore ?? 0) * 100).toFixed(0)}%`
+                        : "Pending"}
+                    </p>
                     <p className={`${textMuted} text-xs mt-1`}>
-                      {evalData.summary.baselineCount} baseline · {evalData.summary.scaledownCount} scaledown
+                      {evalData.summary.avgQualityScore != null
+                        ? `${((evalData.summary.qualityCoverage ?? 0) * 100).toFixed(0)}% of ScaleDown turns scored`
+                        : `${evalData.summary.baselineCount} baseline · ${evalData.summary.scaledownCount} scaledown`}
                     </p>
                   </div>
                 </div>
@@ -556,17 +591,28 @@ export default function Home() {
                         </p>
                       </div>
                       <div>
-                        <p className={textMuted}>Avg LLM latency</p>
+                        <p className={textMuted}>Avg total latency</p>
                         <p className={textSub}>
-                          {evalData.baseline.avgGroqLatencyMs}ms
-                          <span className="text-cyan-400"> → {evalData.scaledown.avgGroqLatencyMs}ms</span>
+                          {evalData.baseline.avgTotalLatencyMs}ms
+                          <span className="text-cyan-400"> → {evalData.scaledown.avgTotalLatencyMs}ms</span>
                         </p>
                       </div>
                       <div>
-                        <p className={textMuted}>ScaleDown overhead</p>
-                        <p className={textSub}>{evalData.comparison.scaledownOverheadMs}ms avg</p>
+                        <p className={textMuted}>Answer fidelity</p>
+                        <p className={textSub}>
+                          {evalData.scaledown.avgQualityScore != null
+                            ? `${((evalData.scaledown.avgQualityScore ?? 0) * 100).toFixed(0)}% vs baseline`
+                            : "pending shadow baseline"}
+                        </p>
                       </div>
                     </div>
+                    <p className={`mt-3 text-xs ${textMuted}`}>
+                      LLM-only delta: {evalData.comparison.groqLatencyDiffMs != null
+                        ? `${evalData.comparison.groqLatencyDiffMs > 0 ? "+" : ""}${evalData.comparison.groqLatencyDiffMs}ms`
+                        : "—"}
+                      {" · "}
+                      ScaleDown overhead: {evalData.comparison.scaledownOverheadMs}ms
+                    </p>
                   </div>
                 )}
 
@@ -581,7 +627,7 @@ export default function Home() {
                   <table className="w-full text-sm">
                     <thead className={`sticky top-0 ${panelBg} border-b ${border}`}>
                       <tr>
-                        {["Conversation", "Mode", "Turns", "Tokens", "Saved", "Avg latency"].map(h => (
+                        {["Conversation", "Mode", "Turns", "Tokens", "Saved", "Avg total latency", "Fidelity"].map(h => (
                           <th key={h} className={`text-left px-4 py-3 ${textMuted} font-medium text-xs uppercase tracking-wide`}>{h}</th>
                         ))}
                       </tr>
@@ -612,7 +658,14 @@ export default function Home() {
                             ) : <span className={textMuted}>—</span>}
                           </td>
                           <td className={`px-4 py-3 font-mono text-sm text-yellow-400`}>
-                            {r.avgGroqLatencyMs}ms
+                            {r.avgTotalLatencyMs}ms
+                          </td>
+                          <td className="px-4 py-3 text-sm">
+                            {r.mode === "scaledown"
+                              ? r.avgQualityScore != null
+                                ? <span className="text-green-400">{(r.avgQualityScore * 100).toFixed(0)}%</span>
+                                : <span className={textMuted}>pending</span>
+                              : <span className={textMuted}>reference</span>}
                           </td>
                         </tr>
                       ))}
