@@ -92,7 +92,7 @@ export async function compressContext(
       body: JSON.stringify({
         context: conversationMessages.map((m) => `${m.role}: ${m.content}`).join("\n"),
         prompt: conversationMessages[conversationMessages.length - 1]?.content || "",
-        scaledown: { rate: options?.rate || "0.5" },
+        scaledown: { rate: options?.rate || "auto" },
       }),
     });
 
