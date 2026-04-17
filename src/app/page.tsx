@@ -122,6 +122,17 @@ export default function Home() {
     }
   }, []);
 
+  const clearHistory = useCallback(async () => {
+    if (!confirm("Delete all conversations and trace data from the database? This cannot be undone.")) return;
+    await fetch("/api/clear-history", { method: "DELETE" });
+    setEvalData(null);
+    setConversations([]);
+    setBaselineTraceData(null);
+    setScaledownTraceData(null);
+    setSelectedBaselineConvId(null);
+    setSelectedScaledownConvId(null);
+  }, []);
+
   const refreshConversations = useCallback(async () => {
     try {
       const res = await fetch("/api/conversations");
@@ -223,16 +234,16 @@ export default function Home() {
     }
 
     return (
-      <div className="overflow-auto flex-1">
+      <div>
         <table className="w-full text-xs">
           <thead className={`sticky top-0 border-b ${border} ${isBaseline ? "bg-gray-950" : "bg-[#030d0f]"}`}>
-            <tr>
-              <th className={`text-left px-3 py-2 ${textMuted} font-medium uppercase tracking-wide`}>Turn</th>
-              <th className={`text-left px-3 py-2 ${textMuted} font-medium uppercase tracking-wide`}>Tokens in</th>
-              {!isBaseline && <th className={`text-left px-3 py-2 ${textMuted} font-medium uppercase tracking-wide`}>After SD</th>}
-              {!isBaseline && <th className={`text-left px-3 py-2 ${textMuted} font-medium uppercase tracking-wide`}>Saved</th>}
-              <th className={`text-left px-3 py-2 ${textMuted} font-medium uppercase tracking-wide`}>Latency</th>
-              <th className={`text-left px-3 py-2 ${textMuted} font-medium uppercase tracking-wide`}>{isBaseline ? "Status" : "Fidelity"}</th>
+            <tr className="h-8">
+              <th className={`text-left px-3 ${textMuted} font-medium uppercase tracking-wide`}>Turn</th>
+              <th className={`text-left px-3 ${textMuted} font-medium uppercase tracking-wide`}>Tokens In</th>
+              {!isBaseline && <th className={`text-left px-3 ${textMuted} font-medium uppercase tracking-wide`}>After SD</th>}
+              {!isBaseline && <th className={`text-left px-3 ${textMuted} font-medium uppercase tracking-wide`}>Saved</th>}
+              <th className={`text-left px-3 ${textMuted} font-medium uppercase tracking-wide`}>Latency</th>
+              <th className={`text-left px-3 ${textMuted} font-medium uppercase tracking-wide`}>{isBaseline ? "Status" : "Fidelity"}</th>
             </tr>
           </thead>
           <tbody>
@@ -298,158 +309,139 @@ export default function Home() {
               className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors ${evalRunning ? "opacity-40 bg-gray-800 text-gray-500" : "bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white"}`}>
               {evalRunning ? "..." : "↻ Refresh"}
             </button>
+            <button onClick={clearHistory} disabled={status !== "idle"}
+              className="px-3 py-1 rounded-lg text-xs font-medium bg-gray-800 hover:bg-red-900/60 text-gray-600 hover:text-red-400 transition-colors disabled:opacity-30">
+              Clear History
+            </button>
           </div>
         </div>
 
-        {/* Delta comparison table */}
+        {/* ── Hero comparison: 3 big cards, Accuracy → Tokens → Latency ── */}
         {evalData && evalData.baseline && evalData.scaledown ? (() => {
           const b = evalData.baseline;
           const s = evalData.scaledown;
-          const cmp = evalData.comparison;
           const latencyDiff = (s.avgTotalLatencyMs ?? 0) - (b.avgTotalLatencyMs ?? 0);
+          const tokensSaved = b.totalOriginalTokens - s.totalCompressedTokens;
+          const compressionPct = b.totalOriginalTokens > 0
+            ? Number(((tokensSaved / b.totalOriginalTokens) * 100).toFixed(1))
+            : 0;
           const fidelity = evalData.summary.avgQualityScore ?? evalData.scaledown?.avgQualityScore ?? null;
           const rouge = evalData.summary.avgRougeScore ?? evalData.scaledown?.avgRougeScore ?? null;
 
           return (
-            <div className="grid grid-cols-[1fr_auto_1fr] divide-x divide-gray-800">
+            <div className="grid grid-cols-3 divide-x divide-gray-800">
 
-              {/* ── Row labels (3 metrics) ── */}
-              {/* We render 3 rows: tokens, latency, fidelity */}
-              {/* Each row: [baseline value] [delta center] [scaledown value] */}
-
-              {/* TOKENS */}
-              <div className="px-6 py-3 flex items-center gap-6">
-                <div>
-                  <p className={`text-[10px] uppercase tracking-widest ${textMuted} mb-1`}>Total Tokens</p>
-                  <p className="text-xl font-bold text-gray-300">{b.totalOriginalTokens.toLocaleString()}</p>
-                  <p className={`text-[10px] ${textMuted} mt-0.5`}>{b.totalTurns} turns · no compression</p>
-                </div>
-                <div className="ml-auto text-right">
-                  <p className={`text-[10px] uppercase tracking-widest ${textMuted} mb-1`}>Avg / turn</p>
-                  <p className={`text-base font-semibold ${textSub}`}>
-                    {Math.round(b.totalOriginalTokens / Math.max(1, b.totalTurns))}
-                  </p>
-                </div>
-              </div>
-
-              {/* DELTA: tokens */}
-              <div className="px-8 py-3 flex flex-col items-center justify-center gap-1 bg-gray-900/30 min-w-[220px]">
-                <p className={`text-[10px] uppercase tracking-widest ${textMuted}`}>Token Delta</p>
-                <p className="text-2xl font-bold text-cyan-400">↓ {evalData.summary.overallCompressionPct}%</p>
-                <p className={`text-xs text-cyan-600`}>{evalData.summary.totalTokensSaved.toLocaleString()} tokens never hit Groq</p>
-              </div>
-
-              <div className="px-6 py-3 flex items-center gap-6">
-                <div>
-                  <p className={`text-[10px] uppercase tracking-widest text-cyan-900 mb-1`}>Total Tokens</p>
-                  <p className="text-xl font-bold text-cyan-300">{s.totalCompressedTokens.toLocaleString()}</p>
-                  <p className={`text-[10px] text-cyan-900 mt-0.5`}>{s.totalTurns} turns · after compression</p>
-                </div>
-                <div className="ml-auto text-right">
-                  <p className={`text-[10px] uppercase tracking-widest text-cyan-900 mb-1`}>Avg / turn</p>
-                  <p className="text-base font-semibold text-cyan-400">
-                    {Math.round(s.totalCompressedTokens / Math.max(1, s.totalTurns))}
-                  </p>
-                </div>
-              </div>
-
-              {/* divider row */}
-              <div className={`col-span-3 h-px bg-gray-800/60`} />
-
-              {/* LATENCY */}
-              <div className="px-6 py-3 flex items-center gap-6">
-                <div>
-                  <p className={`text-[10px] uppercase tracking-widest ${textMuted} mb-1`}>Avg Latency</p>
-                  <p className="text-xl font-bold text-yellow-400">{b.avgTotalLatencyMs ?? "—"}ms</p>
-                  <p className={`text-[10px] ${textMuted} mt-0.5`}>pure LLM · 0ms overhead</p>
-                </div>
-                <div className="ml-auto text-right">
-                  <p className={`text-[10px] uppercase tracking-widest ${textMuted} mb-1`}>LLM only</p>
-                  <p className={`text-base font-semibold ${textSub}`}>{b.avgGroqLatencyMs}ms</p>
-                </div>
-              </div>
-
-              {/* DELTA: latency */}
-              <div className="px-8 py-3 flex flex-col items-center justify-center gap-1 bg-gray-900/30">
-                <p className={`text-[10px] uppercase tracking-widest ${textMuted}`}>Latency Delta</p>
-                <p className={`text-2xl font-bold ${latencyDiff > 0 ? "text-orange-400" : "text-green-400"}`}>
-                  {latencyDiff > 0 ? "+" : ""}{latencyDiff}ms
+              {/* 1 — ACCURACY (priority #1) */}
+              <div className="px-8 py-5 flex flex-col gap-3 bg-green-950/10">
+                <p className={`text-[10px] uppercase tracking-widest ${textMuted}`}>Answer Quality Score</p>
+                <p className={`text-[10px] ${textMuted} -mt-2`}>
+                  How similar are the answers with and without compression? Scored by an LLM judge.
                 </p>
-                {cmp && (
-                  <p className={`text-xs text-center ${textMuted}`}>
-                    {cmp.scaledownOverheadMs}ms compress overhead
-                    {cmp.groqLatencyDiffMs != null && cmp.groqLatencyDiffMs < 0
-                      ? ` · ${Math.abs(cmp.groqLatencyDiffMs)}ms faster LLM`
-                      : ""}
-                  </p>
-                )}
-                <p className={`text-[10px] text-center text-gray-700`}>SD wins latency as context grows</p>
-              </div>
-
-              <div className="px-6 py-3 flex items-center gap-6">
-                <div>
-                  <p className={`text-[10px] uppercase tracking-widest text-cyan-900 mb-1`}>Avg Latency</p>
-                  <p className="text-xl font-bold text-yellow-400">{s.avgTotalLatencyMs ?? "—"}ms</p>
-                  <p className={`text-[10px] text-cyan-900 mt-0.5`}>{s.avgScaledownLatencyMs}ms SD + {s.avgGroqLatencyMs}ms LLM</p>
-                </div>
-                <div className="ml-auto text-right">
-                  <p className={`text-[10px] uppercase tracking-widest text-cyan-900 mb-1`}>LLM only</p>
-                  <p className="text-base font-semibold text-cyan-400">{s.avgGroqLatencyMs}ms</p>
-                </div>
-              </div>
-
-              {/* divider row */}
-              <div className={`col-span-3 h-px bg-gray-800/60`} />
-
-              {/* FIDELITY */}
-              <div className="px-6 py-3 flex items-center gap-6">
-                <div>
-                  <p className={`text-[10px] uppercase tracking-widest ${textMuted} mb-1`}>Answer Fidelity</p>
-                  <p className={`text-xl font-bold text-gray-400`}>Reference</p>
-                  <p className={`text-[10px] ${textMuted} mt-0.5`}>uncompressed · ground truth</p>
-                </div>
-              </div>
-
-              {/* DELTA: fidelity */}
-              <div className="px-8 py-3 flex flex-col items-center justify-center gap-1 bg-gray-900/30">
-                <p className={`text-[10px] uppercase tracking-widest ${textMuted}`}>Accuracy Delta</p>
-                {fidelity != null ? (
-                  <>
-                    <p className="text-xl font-bold text-green-400">{((fidelity) * 100).toFixed(0)}%</p>
-                    <p className={`text-[10px] text-green-700`}>LLM-judge fidelity</p>
-                    {rouge != null && (
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <p className={`text-[10px] uppercase tracking-widest ${textMuted} mb-1`}>Baseline</p>
+                    {evalData.baseline?.avgQualityScore != null ? (
                       <>
-                        <p className="text-lg font-bold text-green-300 mt-0.5">{((rouge) * 100).toFixed(0)}%</p>
-                        <p className={`text-[10px] text-green-800`}>ROUGE-1 F1</p>
+                        <p className="text-3xl font-black text-gray-300">{(evalData.baseline.avgQualityScore * 100).toFixed(0)}%</p>
+                        <p className={`text-[10px] ${textMuted} mt-0.5`}>vs ScaleDown shadow · LLM-judge</p>
+                      </>
+                    ) : (
+                      <>
+                        <p className="text-3xl font-black text-gray-500">—</p>
+                        <p className={`text-[10px] ${textMuted} mt-0.5`}>run baseline conversation</p>
                       </>
                     )}
-                  </>
-                ) : (
-                  <>
-                    <p className={`text-xl font-bold ${textMuted}`}>—</p>
-                    <p className={`text-xs ${textMuted}`}>run ScaleDown conversation</p>
-                  </>
-                )}
+                  </div>
+                  <div>
+                    <p className="text-[10px] uppercase tracking-widest text-green-900 mb-1">ScaleDown</p>
+                    {fidelity != null ? (
+                      <>
+                        <p className="text-3xl font-black text-green-400">{(fidelity * 100).toFixed(0)}%</p>
+                        <p className="text-[10px] text-green-800 mt-0.5">LLM-judge · {rouge != null ? `${(rouge * 100).toFixed(0)}% ROUGE-1` : "semantic match"}</p>
+                      </>
+                    ) : (
+                      <>
+                        <p className="text-3xl font-black text-gray-600">—</p>
+                        <p className={`text-[10px] ${textMuted} mt-0.5`}>run ScaleDown conversation</p>
+                      </>
+                    )}
+                  </div>
+                </div>
               </div>
 
-              <div className="px-6 py-3 flex items-center gap-6">
-                <div>
-                  <p className={`text-[10px] uppercase tracking-widest text-cyan-900 mb-1`}>Answer Accuracy</p>
-                  {fidelity != null ? (
-                    <>
-                      <p className={`text-base font-bold text-green-400`}>{((fidelity) * 100).toFixed(0)}% <span className="text-[10px] font-normal text-cyan-900">LLM-judge</span></p>
-                      {rouge != null && (
-                        <p className={`text-base font-bold text-green-300`}>{((rouge) * 100).toFixed(0)}% <span className="text-[10px] font-normal text-cyan-900">ROUGE-1 F1</span></p>
-                      )}
-                      <p className={`text-[10px] text-cyan-900 mt-0.5`}>{((evalData.summary.qualityCoverage ?? 0) * 100).toFixed(0)}% turns scored</p>
-                    </>
-                  ) : (
-                    <>
-                      <p className={`text-xl font-bold text-gray-600`}>Pending</p>
-                      <p className={`text-[10px] text-cyan-900 mt-0.5`}>run with SHADOW_BASELINE=true</p>
-                    </>
-                  )}
+              {/* 2 — TOKENS */}
+              <div className="px-8 py-5 flex flex-col gap-4">
+                <p className={`text-[10px] uppercase tracking-widest ${textMuted}`}>Tokens Sent to Groq · Same Conversation</p>
+                <div className="space-y-3">
+                  <div>
+                    <div className="flex justify-between text-xs mb-1">
+                      <span className={textMuted}>Baseline</span>
+                      <span className={textSub}>{b.totalOriginalTokens.toLocaleString()}</span>
+                    </div>
+                    <div className="h-5 bg-gray-700 rounded" />
+                  </div>
+                  <div>
+                    <div className="flex justify-between text-xs mb-1">
+                      <span className="text-cyan-400 font-semibold">ScaleDown</span>
+                      <span className="text-cyan-400 font-semibold">{s.totalCompressedTokens.toLocaleString()} <span className="text-cyan-700">↓ {compressionPct}%</span></span>
+                    </div>
+                    <div className="h-5 bg-gray-800 rounded overflow-hidden">
+                      <div
+                        className="h-full bg-cyan-500 rounded"
+                        style={{ width: `${100 - compressionPct}%` }}
+                      />
+                    </div>
+                  </div>
                 </div>
+                <p className={`text-[10px] ${textMuted}`}>{tokensSaved.toLocaleString()} tokens never reached Groq</p>
+              </div>
+
+              {/* 3 — LATENCY BREAKDOWN */}
+              <div className="px-8 py-5 flex flex-col gap-3">
+                <p className={`text-[10px] uppercase tracking-widest ${textMuted}`}>Avg Latency · Per Turn</p>
+                <div className="grid grid-cols-2 gap-6">
+                  {/* Baseline */}
+                  <div>
+                    <p className={`text-[10px] uppercase tracking-widest ${textMuted} mb-2`}>Baseline</p>
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-xs">
+                        <span className={textMuted}>Groq</span>
+                        <span className={textSub}>{b.avgGroqLatencyMs}ms</span>
+                      </div>
+                      <div className="flex justify-between text-xs">
+                        <span className={textMuted}>Overhead</span>
+                        <span className={textMuted}>0ms</span>
+                      </div>
+                      <div className={`h-px bg-gray-800 my-1`} />
+                      <div className="flex justify-between">
+                        <span className={`text-xs font-semibold ${textSub}`}>Total</span>
+                        <span className="text-base font-black text-yellow-400">{b.avgTotalLatencyMs ?? "—"}ms</span>
+                      </div>
+                    </div>
+                  </div>
+                  {/* ScaleDown */}
+                  <div>
+                    <p className="text-[10px] uppercase tracking-widest text-cyan-900 mb-2">ScaleDown</p>
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-xs">
+                        <span className="text-cyan-900">Groq</span>
+                        <span className="text-cyan-400">{s.avgGroqLatencyMs}ms</span>
+                      </div>
+                      <div className="flex justify-between text-xs">
+                        <span className="text-cyan-900">ScaleDown</span>
+                        <span className="text-cyan-400">{s.avgScaledownLatencyMs}ms</span>
+                      </div>
+                      <div className="h-px bg-cyan-900/30 my-1" />
+                      <div className="flex justify-between">
+                        <span className="text-xs font-semibold text-cyan-900">Total</span>
+                        <span className="text-base font-black text-yellow-400">{s.avgTotalLatencyMs ?? "—"}ms</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <p className={`text-[10px] ${textMuted}`}>
+                  +{latencyDiff}ms overhead today · closes as context grows (fewer tokens = faster Groq)
+                </p>
               </div>
 
             </div>
@@ -457,9 +449,7 @@ export default function Home() {
         })() : (
           <div className="px-6 py-4 flex items-center gap-3">
             <p className={`text-xs ${textMuted}`}>
-              {evalRunning
-                ? "Calculating delta..."
-                : "Run a baseline and a ScaleDown conversation to see the comparison"}
+              {evalRunning ? "Calculating..." : "Run a baseline and a ScaleDown conversation to see the comparison"}
             </p>
           </div>
         )}
@@ -484,14 +474,11 @@ export default function Home() {
         </div>
       )}
 
-      {/* ── MAIN: two-column wall ── */}
-      <div className="flex flex-1 overflow-hidden">
+      {/* ── MAIN: two-column grid — headers share row 1, tables share row 2 ── */}
+      <div className="flex-1 overflow-hidden grid grid-cols-2" style={{ gridTemplateRows: "auto 1fr" }}>
 
-        {/* ══════════════════ LEFT: BASELINE ══════════════════ */}
-        <div className={`flex-1 flex flex-col overflow-hidden border-r-2 border-gray-800 bg-gray-950`}>
-
-          {/* Column header */}
-          <div className={`shrink-0 border-b ${border} px-5 pt-4 pb-3`}>
+        {/* ══════════════════ LEFT HEADER: BASELINE ══════════════════ */}
+        <div className={`border-b border-r-2 ${border} px-5 pt-4 pb-3 bg-gray-950`}>
             <div className="flex items-start justify-between gap-4">
               <div>
                 <div className="flex items-center gap-2 mb-1">
@@ -544,28 +531,10 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Baseline hero stats */}
             {leftData && leftData.traces.length > 0 && (
-              <div className={`mt-3 grid grid-cols-3 gap-px bg-gray-800 rounded-xl overflow-hidden`}>
-                <div className="bg-gray-900 px-4 py-3">
-                  <p className={`text-[10px] uppercase tracking-widest ${textMuted}`}>Total tokens sent</p>
-                  <p className="text-2xl font-bold text-gray-300 mt-1">
-                    {leftData.traces.reduce((s, t) => s + t.originalTokens, 0).toLocaleString()}
-                  </p>
-                  <p className={`text-[10px] ${textMuted} mt-0.5`}>{leftData.totalTurns} turns · no compression</p>
-                </div>
-                <div className="bg-gray-900 px-4 py-3">
-                  <p className={`text-[10px] uppercase tracking-widest ${textMuted}`}>Avg latency</p>
-                  <p className="text-2xl font-bold text-yellow-400 mt-1">
-                    {leftData.summary.avgTotalLatencyMs > 0 ? `${leftData.summary.avgTotalLatencyMs}ms` : "—"}
-                  </p>
-                  <p className={`text-[10px] ${textMuted} mt-0.5`}>pure LLM · 0ms overhead</p>
-                </div>
-                <div className="bg-gray-900 px-4 py-3">
-                  <p className={`text-[10px] uppercase tracking-widest ${textMuted}`}>Fidelity</p>
-                  <p className={`text-2xl font-bold text-gray-400 mt-1`}>Reference</p>
-                  <p className={`text-[10px] ${textMuted} mt-0.5`}>uncompressed baseline</p>
-                </div>
+              <div className={`mt-3 flex items-center gap-6 text-xs ${textMuted}`}>
+                <span>{leftData.traces.reduce((s, t) => s + t.originalTokens, 0).toLocaleString()} tokens · {leftData.totalTurns} turns</span>
+                <span>avg {leftData.summary.avgTotalLatencyMs > 0 ? `${leftData.summary.avgTotalLatencyMs}ms` : "—"} latency</span>
               </div>
             )}
 
@@ -579,7 +548,7 @@ export default function Home() {
                     className={`text-xs bg-gray-900 border ${border} rounded-lg px-2.5 py-1.5 ${textSub} cursor-pointer`}>
                     <option value="">Select conversation</option>
                     {baselineConvs.map(c => (
-                      <option key={c.id} value={c.id}>{c.label} · {c.turns} turns</option>
+                      <option key={c.id} value={c.id}>{c.label}</option>
                     ))}
                   </select>
                 ) : (
@@ -588,16 +557,10 @@ export default function Home() {
                 {leftData && <span className={`text-[10px] ${textMuted} ml-auto`}>{leftData.totalTurns} turns</span>}
               </div>
             )}
-          </div>
-
-          {renderTable(leftData, true, isLiveBaseline)}
         </div>
 
-        {/* ══════════════════ RIGHT: SCALEDOWN ══════════════════ */}
-        <div className="flex-1 flex flex-col overflow-hidden bg-[#010c0e]">
-
-          {/* Column header */}
-          <div className={`shrink-0 border-b border-cyan-900/50 px-5 pt-4 pb-3 bg-cyan-950/10`}>
+        {/* ══════════════════ RIGHT HEADER: SCALEDOWN ══════════════════ */}
+        <div className={`border-b border-cyan-900/50 px-5 pt-4 pb-3 bg-cyan-950/10`}>
             <div className="flex items-start justify-between gap-4">
               <div>
                 <div className="flex items-center gap-2 mb-1">
@@ -650,58 +613,17 @@ export default function Home() {
               </div>
             </div>
 
-            {/* ScaleDown hero stats — the "OMG" section */}
             {rightData && rightData.traces.length > 0 && (() => {
               const totalIn = rightData.traces.reduce((s, t) => s + t.originalTokens, 0);
               const totalOut = rightData.traces.reduce((s, t) => s + t.compressedTokens, 0);
-              const saved = totalIn - totalOut;
-              const pct = totalIn > 0 ? ((saved / totalIn) * 100) | 0 : 0;
-              const barPct = 100 - pct;
-
+              const pct = totalIn > 0 ? (((totalIn - totalOut) / totalIn) * 100) | 0 : 0;
               return (
-                <div className="mt-3 space-y-2">
-                  <div className="grid grid-cols-3 gap-px bg-cyan-900/20 rounded-xl overflow-hidden border border-cyan-900/30">
-                    {/* Token compression */}
-                    <div className="bg-[#010c0e] px-4 py-3">
-                      <p className={`text-[10px] uppercase tracking-widest text-cyan-900`}>Tokens sent to LLM</p>
-                      <div className="flex items-baseline gap-1.5 mt-1">
-                        <span className={`text-sm line-through ${textMuted}`}>{totalIn.toLocaleString()}</span>
-                        <span className="text-cyan-900 text-xs">→</span>
-                        <span className="text-2xl font-bold text-cyan-300">{totalOut.toLocaleString()}</span>
-                      </div>
-                      {/* Visual compression bar */}
-                      <div className="mt-2 h-1.5 bg-gray-800 rounded-full overflow-hidden">
-                        <div className="h-full bg-cyan-500 rounded-full transition-all" style={{ width: `${barPct}%` }} />
-                      </div>
-                      <p className="text-[10px] text-cyan-600 mt-1 font-semibold">{pct}% never reached Groq</p>
-                    </div>
-
-                    {/* Latency */}
-                    <div className="bg-[#010c0e] px-4 py-3">
-                      <p className={`text-[10px] uppercase tracking-widest text-cyan-900`}>Avg latency</p>
-                      <p className="text-2xl font-bold text-yellow-400 mt-1">
-                        {rightData.summary.avgTotalLatencyMs > 0 ? `${rightData.summary.avgTotalLatencyMs}ms` : "—"}
-                      </p>
-                      <p className={`text-[10px] text-cyan-900 mt-0.5`}>
-                        {rightData.summary.avgGroqLatencyMs}ms LLM + {rightData.summary.avgScaledownLatencyMs}ms SD
-                      </p>
-                    </div>
-
-                    {/* Fidelity */}
-                    <div className="bg-[#010c0e] px-4 py-3">
-                      <p className={`text-[10px] uppercase tracking-widest text-cyan-900`}>Answer fidelity</p>
-                      <p className={`text-2xl font-bold mt-1 ${rightData.summary.avgQualityScore != null ? "text-green-400" : "text-gray-600"}`}>
-                        {rightData.summary.avgQualityScore != null
-                          ? `${((rightData.summary.avgQualityScore) * 100).toFixed(0)}%`
-                          : "—"}
-                      </p>
-                      <p className={`text-[10px] text-cyan-900 mt-0.5`}>
-                        {rightData.summary.avgQualityScore != null
-                          ? `${rightData.traces.filter(t => t.qualityScore != null).length} turns scored vs baseline`
-                          : "enable SHADOW_BASELINE"}
-                      </p>
-                    </div>
-                  </div>
+                <div className={`mt-3 flex items-center gap-6 text-xs text-cyan-900`}>
+                  <span className="text-cyan-400 font-semibold">{pct}% tokens compressed</span>
+                  <span>avg {rightData.summary.avgTotalLatencyMs > 0 ? `${rightData.summary.avgTotalLatencyMs}ms` : "—"} latency</span>
+                  {rightData.summary.avgQualityScore != null && (
+                    <span className="text-green-500 font-semibold">{(rightData.summary.avgQualityScore * 100).toFixed(0)}% fidelity</span>
+                  )}
                 </div>
               );
             })()}
@@ -716,7 +638,7 @@ export default function Home() {
                     className="text-xs bg-[#010c0e] border border-cyan-900/50 rounded-lg px-2.5 py-1.5 text-cyan-400 cursor-pointer">
                     <option value="">Select conversation</option>
                     {scaledownConvs.map(c => (
-                      <option key={c.id} value={c.id}>{c.label} · {c.turns} turns</option>
+                      <option key={c.id} value={c.id}>{c.label}</option>
                     ))}
                   </select>
                 ) : (
@@ -725,10 +647,18 @@ export default function Home() {
                 {rightData && <span className={`text-[10px] text-cyan-900 ml-auto`}>{rightData.totalTurns} turns</span>}
               </div>
             )}
-          </div>
+        </div>
 
+        {/* ══ LEFT TABLE ══ */}
+        <div className="overflow-auto border-r-2 border-gray-800 bg-gray-950">
+          {renderTable(leftData, true, isLiveBaseline)}
+        </div>
+
+        {/* ══ RIGHT TABLE ══ */}
+        <div className="overflow-auto bg-[#010c0e]">
           {renderTable(rightData, false, isLiveScaledown)}
         </div>
+
       </div>
 
       {/* Global error / audio */}
