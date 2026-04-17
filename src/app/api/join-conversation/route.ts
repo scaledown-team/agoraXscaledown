@@ -110,6 +110,7 @@ export async function POST(req: NextRequest) {
             },
             output_format: {
               container: "raw",
+              encoding: "pcm_s16le",
               sample_rate: 16000,
             },
             language: "en",
