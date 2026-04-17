@@ -71,8 +71,11 @@ export async function GET() {
       const avgScaledownLatencyMs = n > 0
         ? Math.round((traces || []).reduce((s: number, t: any) => s + (t.latency_ms || 0), 0) / n)
         : 0;
+      const avgTotalLatencyMs = n > 0
+        ? Math.round((traces || []).reduce((s: number, t: any) => s + (t.total_latency_ms || t.latency_ms || 0), 0) / n)
+        : 0;
       const scaledownTurns = (traces || []).filter((t: any) => !t.baseline_mode);
-      const accuracyRate = scaledownTurns.length > 0
+      const successfulCompressionRate = scaledownTurns.length > 0
         ? scaledownTurns.filter((t: any) => t.compression_success).length / scaledownTurns.length
         : 1;
 
@@ -82,10 +85,13 @@ export async function GET() {
       );
 
       // Quality score aggregation
-      const scoredTraces = (traces || []).filter((t: any) => t.quality_score != null);
+      const scoredTraces = scaledownTurns.filter((t: any) => t.quality_score != null);
       const avgQualityScore = scoredTraces.length > 0
         ? scoredTraces.reduce((s: number, t: any) => s + Number(t.quality_score), 0) / scoredTraces.length
         : null;
+      const qualityCoverage = scaledownTurns.length > 0
+        ? scoredTraces.length / scaledownTurns.length
+        : 0;
 
       return {
         id: conv.id,
@@ -97,9 +103,11 @@ export async function GET() {
         avgCompressionRatio: Number(avgCompressionRatio.toFixed(3)),
         avgGroqLatencyMs,
         avgScaledownLatencyMs,
-        accuracyRate: Number(accuracyRate.toFixed(3)),
+        avgTotalLatencyMs,
+        successfulCompressionRate: Number(successfulCompressionRate.toFixed(3)),
         totalCostUsd: Number(totalCostUsd.toFixed(8)),
         avgQualityScore: avgQualityScore != null ? Number(avgQualityScore.toFixed(3)) : null,
+        qualityCoverage: Number(qualityCoverage.toFixed(3)),
       };
     }));
 
