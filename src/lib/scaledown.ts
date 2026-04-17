@@ -27,14 +27,18 @@ export interface CompressResult {
   compressionSuccess: boolean;
 }
 
-let turnCounter = 0;
+const turnCounters = new Map<string, number>();
 
-export function getAndIncrementTurn(): number {
-  return ++turnCounter;
+export function getAndIncrementTurn(conversationId?: string): number {
+  const key = conversationId || "__global__";
+  const next = (turnCounters.get(key) ?? 0) + 1;
+  turnCounters.set(key, next);
+  return next;
 }
 
-export function resetTurnCounter(): void {
-  turnCounter = 0;
+export function resetTurnCounter(conversationId?: string): void {
+  const key = conversationId || "__global__";
+  turnCounters.delete(key);
 }
 
 /**
