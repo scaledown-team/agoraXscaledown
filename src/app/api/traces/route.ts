@@ -39,8 +39,8 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Failed to fetch traces" }, { status: 500 });
   }
 
-  const traces = (rows || []).map((r) => ({
-    turn: r.turn,
+  const traces = (rows || []).map((r, index) => ({
+    turn: index + 1,
     timestamp: new Date(r.created_at).getTime(),
     originalTokens: r.original_tokens,
     compressedTokens: r.compressed_tokens,
