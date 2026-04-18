@@ -212,14 +212,42 @@ export default function Home() {
     startConversation("scaledown");
   }, [startConversation]);
 
+  const [isDark, setIsDark] = useState(true);
+
   const isLiveBaseline = status === "active" && mode === "baseline";
   const isLiveScaledown = status === "active" && mode === "scaledown";
   const leftData = isLiveBaseline ? liveTraceData : baselineTraceData;
   const rightData = isLiveScaledown ? liveTraceData : scaledownTraceData;
 
-  const border = "border-gray-800";
-  const textMuted = "text-gray-600";
-  const textSub = "text-gray-400";
+  // ── Theme ─────────────────────────────────────────────────
+  const border    = isDark ? "border-gray-800"  : "border-gray-200";
+  const textMuted = isDark ? "text-gray-600"    : "text-gray-400";
+  const textSub   = isDark ? "text-gray-400"    : "text-gray-600";
+
+  const mainBg        = isDark ? "bg-gray-950 text-white"    : "bg-gray-100 text-gray-900";
+  const headerBg      = isDark ? "bg-gray-900/50"            : "bg-white";
+  const headerBorder  = isDark ? "border-gray-800/60"        : "border-gray-200";
+  const panelBg       = isDark ? "bg-gray-950"               : "bg-white";
+  const sdPanelBg     = isDark ? "bg-cyan-950/10"            : "bg-cyan-50/40";
+  const sdBorderCol   = isDark ? "border-cyan-900/50"        : "border-cyan-200";
+  const tableBg       = isDark ? "bg-gray-950"               : "bg-white";
+  const sdTableBg     = isDark ? "bg-[#010c0e]"              : "bg-cyan-50/20";
+  const tableHeaderBg = isDark ? "bg-gray-950"               : "bg-gray-50";
+  const sdTableHdrBg  = isDark ? "bg-[#030d0f]"              : "bg-cyan-50/30";
+  const tableHover    = isDark ? "hover:bg-gray-900/40"      : "hover:bg-gray-50";
+  const sdTableHover  = isDark ? "hover:bg-cyan-950/20"      : "hover:bg-cyan-50/50";
+  const baselineTag   = isDark ? "bg-gray-800 text-gray-400" : "bg-gray-100 text-gray-600 border border-gray-300";
+  const sdTag         = isDark ? "bg-cyan-950 text-cyan-300 border border-cyan-800" : "bg-cyan-50 text-cyan-700 border border-cyan-300";
+  const baselineBar   = isDark ? "bg-gray-600"               : "bg-gray-300";
+  const baselineTotal = isDark ? "text-gray-300"             : "text-gray-800";
+  const baselineSelect= isDark ? `bg-gray-900 border ${border} ${textSub}` : `bg-white border border-gray-200 text-gray-600`;
+  const sdSelectCls   = isDark ? "bg-[#010c0e] border border-cyan-900/50 text-cyan-400" : "bg-white border border-cyan-200 text-cyan-700";
+  const btnBase       = isDark ? "bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white" : "bg-gray-200 hover:bg-gray-300 text-gray-600 hover:text-gray-900";
+  const clearBtn      = isDark ? "bg-gray-800 hover:bg-red-900/60 text-gray-600 hover:text-red-400" : "bg-gray-200 hover:bg-red-100 text-gray-500 hover:text-red-600";
+  const baselineBtn   = isDark ? "bg-gray-700 hover:bg-gray-600 text-white" : "bg-gray-700 hover:bg-gray-600 text-white";
+  const baselineBtnDis= isDark ? "bg-gray-800 text-gray-500" : "bg-gray-200 text-gray-400";
+  const sdBtnDis      = isDark ? "bg-cyan-950 text-cyan-600" : "bg-cyan-100 text-cyan-400";
+  const dividerBorder = isDark ? "border-gray-800" : "border-gray-200";
 
   // ── Per-turn trace table ──────────────────────────────────
   function renderTable(data: TraceData | null, isBaseline: boolean, isLive: boolean) {
@@ -236,7 +264,7 @@ export default function Home() {
     return (
       <div>
         <table className="w-full text-xs">
-          <thead className={`sticky top-0 border-b ${border} ${isBaseline ? "bg-gray-950" : "bg-[#030d0f]"}`}>
+          <thead className={`sticky top-0 border-b ${border} ${isBaseline ? tableHeaderBg : sdTableHdrBg}`}>
             <tr className="h-8">
               <th className={`text-left px-3 ${textMuted} font-medium uppercase tracking-wide`}>Turn</th>
               <th className={`text-left px-3 ${textMuted} font-medium uppercase tracking-wide`}>Tokens In</th>
@@ -249,7 +277,7 @@ export default function Home() {
           <tbody>
             {data.traces.map((t) => (
               <tr key={`${t.turn}-${t.originalTokens}`}
-                className={`border-b ${border} last:border-0 transition-colors ${isBaseline ? "hover:bg-gray-900/40" : "hover:bg-cyan-950/20"}`}>
+                className={`border-b ${border} last:border-0 transition-colors ${isBaseline ? tableHover : sdTableHover}`}>
                 <td className={`px-3 py-2.5 font-mono ${textMuted}`}>{t.turn}</td>
                 <td className={`px-3 py-2.5 font-mono ${textSub}`}>{t.originalTokens.toLocaleString()}</td>
                 {!isBaseline && (
@@ -260,18 +288,18 @@ export default function Home() {
                 {!isBaseline && (
                   <td className="px-3 py-2.5 font-semibold">
                     {t.compressionSuccess
-                      ? <span className={t.compressionRatio >= 0.5 ? "text-green-400" : "text-yellow-400"}>{(t.compressionRatio * 100).toFixed(0)}%</span>
+                      ? <span className="text-cyan-400">{(t.compressionRatio * 100).toFixed(0)}%</span>
                       : <span className="text-orange-400">fallback</span>}
                   </td>
                 )}
-                <td className={`px-3 py-2.5 font-mono ${t.totalLatencyMs > 0 ? "text-yellow-400" : textMuted}`}>
+                <td className={`px-3 py-2.5 font-mono ${t.totalLatencyMs > 0 ? (isBaseline ? "text-gray-300" : "text-cyan-400") : textMuted}`}>
                   {t.totalLatencyMs > 0 ? `${t.totalLatencyMs}ms` : "—"}
                 </td>
                 <td className="px-3 py-2.5">
                   {isBaseline
                     ? <span className={textMuted}>reference</span>
                     : t.qualityScore != null && t.qualityScore >= 0
-                      ? <span className="text-green-400 font-semibold">{(t.qualityScore * 100).toFixed(0)}%</span>
+                      ? <span className="text-cyan-400 font-semibold">{(t.qualityScore * 100).toFixed(0)}%</span>
                       : t.compressionSuccess
                         ? <span className="text-cyan-500">compressed</span>
                         : <span className="text-orange-400">fallback</span>}
@@ -286,13 +314,13 @@ export default function Home() {
 
   // ── Main render ───────────────────────────────────────────
   return (
-    <main className="flex flex-col h-screen bg-gray-950 text-white overflow-hidden">
+    <main className={`flex flex-col h-screen overflow-hidden ${mainBg}`}>
 
       {/* ── TOP HEADER ── */}
-      <header className={`shrink-0 border-b ${border} bg-gray-900/50`}>
+      <header className={`shrink-0 border-b ${border} ${headerBg}`}>
 
         {/* Branding row */}
-        <div className={`flex items-center justify-between px-6 py-2.5 border-b border-gray-800/60`}>
+        <div className={`flex items-center justify-between px-6 py-2.5 border-b ${headerBorder}`}>
           <div>
             <h1 className="text-sm font-bold tracking-tight">
               Agora <span className="text-blue-400">×</span> ScaleDown
@@ -305,12 +333,16 @@ export default function Home() {
                 {evalData.summary.baselineCount} baseline · {evalData.summary.scaledownCount} scaledown · {evalData.summary.totalTurns} turns
               </p>
             )}
+            <button onClick={() => setIsDark(d => !d)}
+              className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors ${btnBase}`}>
+              {isDark ? "☀ Light" : "☾ Dark"}
+            </button>
             <button onClick={runEval} disabled={evalRunning}
-              className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors ${evalRunning ? "opacity-40 bg-gray-800 text-gray-500" : "bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white"}`}>
+              className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors ${evalRunning ? `opacity-40 ${isDark ? "bg-gray-800 text-gray-500" : "bg-gray-200 text-gray-400"}` : btnBase}`}>
               {evalRunning ? "..." : "↻ Refresh"}
             </button>
             <button onClick={clearHistory} disabled={status !== "idle"}
-              className="px-3 py-1 rounded-lg text-xs font-medium bg-gray-800 hover:bg-red-900/60 text-gray-600 hover:text-red-400 transition-colors disabled:opacity-30">
+              className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors disabled:opacity-30 ${clearBtn}`}>
               Clear History
             </button>
           </div>
@@ -332,7 +364,7 @@ export default function Home() {
             <div className="grid grid-cols-3 divide-x divide-gray-800">
 
               {/* 1 — ACCURACY (priority #1) */}
-              <div className="px-8 py-5 flex flex-col gap-3 bg-green-950/10">
+              <div className="px-8 py-5 flex flex-col gap-3">
                 <p className={`text-[10px] uppercase tracking-widest ${textMuted}`}>Answer Quality Score</p>
                 <p className={`text-[10px] ${textMuted} -mt-2`}>
                   How similar are the answers with and without compression? Scored by an LLM judge.
@@ -353,11 +385,11 @@ export default function Home() {
                     )}
                   </div>
                   <div>
-                    <p className="text-[10px] uppercase tracking-widest text-green-900 mb-1">ScaleDown</p>
+                    <p className="text-[10px] uppercase tracking-widest text-cyan-900 mb-1">ScaleDown</p>
                     {fidelity != null ? (
                       <>
-                        <p className="text-3xl font-black text-green-400">{(fidelity * 100).toFixed(0)}%</p>
-                        <p className="text-[10px] text-green-800 mt-0.5">LLM-judge · {rouge != null ? `${(rouge * 100).toFixed(0)}% ROUGE-1` : "semantic match"}</p>
+                        <p className="text-3xl font-black text-cyan-400">{(fidelity * 100).toFixed(0)}%</p>
+                        <p className="text-[10px] text-cyan-700 mt-0.5">LLM-judge · {rouge != null ? `${(rouge * 100).toFixed(0)}% ROUGE-1` : "semantic match"}</p>
                       </>
                     ) : (
                       <>
@@ -378,7 +410,7 @@ export default function Home() {
                       <span className={textMuted}>Baseline</span>
                       <span className={textSub}>{b.totalOriginalTokens.toLocaleString()}</span>
                     </div>
-                    <div className="h-5 bg-gray-700 rounded" />
+                    <div className={`h-5 rounded w-full ${baselineBar}`} />
                   </div>
                   <div>
                     <div className="flex justify-between text-xs mb-1">
@@ -415,7 +447,7 @@ export default function Home() {
                       <div className={`h-px bg-gray-800 my-1`} />
                       <div className="flex justify-between">
                         <span className={`text-xs font-semibold ${textSub}`}>Total</span>
-                        <span className="text-base font-black text-yellow-400">{b.avgTotalLatencyMs ?? "—"}ms</span>
+                        <span className={`text-base font-black ${baselineTotal}`}>{b.avgTotalLatencyMs ?? "—"}ms</span>
                       </div>
                     </div>
                   </div>
@@ -434,7 +466,7 @@ export default function Home() {
                       <div className="h-px bg-cyan-900/30 my-1" />
                       <div className="flex justify-between">
                         <span className="text-xs font-semibold text-cyan-900">Total</span>
-                        <span className="text-base font-black text-yellow-400">{s.avgTotalLatencyMs ?? "—"}ms</span>
+                        <span className="text-base font-black text-cyan-400">{s.avgTotalLatencyMs ?? "—"}ms</span>
                       </div>
                     </div>
                   </div>
@@ -478,11 +510,11 @@ export default function Home() {
       <div className="flex-1 overflow-hidden grid grid-cols-2" style={{ gridTemplateRows: "auto 1fr" }}>
 
         {/* ══════════════════ LEFT HEADER: BASELINE ══════════════════ */}
-        <div className={`border-b border-r-2 ${border} px-5 pt-4 pb-3 bg-gray-950`}>
+        <div className={`border-b border-r-2 ${border} px-5 pt-4 pb-3 ${panelBg}`}>
             <div className="flex items-start justify-between gap-4">
               <div>
                 <div className="flex items-center gap-2 mb-1">
-                  <span className="text-xs font-bold bg-gray-800 text-gray-400 px-2.5 py-0.5 rounded-full uppercase tracking-widest">
+                  <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full uppercase tracking-widest ${baselineTag}`}>
                     Baseline
                   </span>
                   {isLiveBaseline && (
@@ -504,7 +536,7 @@ export default function Home() {
               <div className="shrink-0 flex flex-col items-end gap-1.5">
                 {status === "idle" ? (
                   <button onClick={startBaseline}
-                    className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-xl text-xs font-semibold transition-colors text-white whitespace-nowrap">
+                    className={`px-4 py-2 rounded-xl text-xs font-semibold transition-colors whitespace-nowrap ${baselineBtn}`}>
                     Start Baseline
                   </button>
                 ) : isLiveBaseline ? (
@@ -514,7 +546,7 @@ export default function Home() {
                   </button>
                 ) : (
                   <button disabled
-                    className="px-4 py-2 bg-gray-800 rounded-xl text-xs font-semibold opacity-40 text-gray-500 whitespace-nowrap">
+                    className={`px-4 py-2 rounded-xl text-xs font-semibold opacity-40 whitespace-nowrap ${baselineBtnDis}`}>
                     {status === "connecting" ? "Connecting..." : status === "ending" ? "Ending..." : "ScaleDown active"}
                   </button>
                 )}
@@ -545,7 +577,7 @@ export default function Home() {
                   <select
                     value={selectedBaselineConvId || ""}
                     onChange={e => setSelectedBaselineConvId(e.target.value || null)}
-                    className={`text-xs bg-gray-900 border ${border} rounded-lg px-2.5 py-1.5 ${textSub} cursor-pointer`}>
+                    className={`text-xs rounded-lg px-2.5 py-1.5 cursor-pointer ${baselineSelect}`}>
                     <option value="">Select conversation</option>
                     {baselineConvs.map(c => (
                       <option key={c.id} value={c.id}>{c.label}</option>
@@ -560,11 +592,11 @@ export default function Home() {
         </div>
 
         {/* ══════════════════ RIGHT HEADER: SCALEDOWN ══════════════════ */}
-        <div className={`border-b border-cyan-900/50 px-5 pt-4 pb-3 bg-cyan-950/10`}>
+        <div className={`border-b px-5 pt-4 pb-3 ${sdPanelBg} ${sdBorderCol}`}>
             <div className="flex items-start justify-between gap-4">
               <div>
                 <div className="flex items-center gap-2 mb-1">
-                  <span className="text-xs font-bold bg-cyan-950 text-cyan-300 border border-cyan-800 px-2.5 py-0.5 rounded-full uppercase tracking-widest">
+                  <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full uppercase tracking-widest ${sdTag}`}>
                     ScaleDown
                   </span>
                   {isLiveScaledown && (
@@ -596,7 +628,7 @@ export default function Home() {
                   </button>
                 ) : (
                   <button disabled
-                    className="px-4 py-2 bg-cyan-950 rounded-xl text-xs font-semibold opacity-40 text-cyan-600 whitespace-nowrap">
+                    className={`px-4 py-2 rounded-xl text-xs font-semibold opacity-40 whitespace-nowrap ${sdBtnDis}`}>
                     {status === "connecting" ? "Connecting..." : status === "ending" ? "Ending..." : "Baseline active"}
                   </button>
                 )}
@@ -622,7 +654,7 @@ export default function Home() {
                   <span className="text-cyan-400 font-semibold">{pct}% tokens compressed</span>
                   <span>avg {rightData.summary.avgTotalLatencyMs > 0 ? `${rightData.summary.avgTotalLatencyMs}ms` : "—"} latency</span>
                   {rightData.summary.avgQualityScore != null && (
-                    <span className="text-green-500 font-semibold">{(rightData.summary.avgQualityScore * 100).toFixed(0)}% fidelity</span>
+                    <span className="text-cyan-400 font-semibold">{(rightData.summary.avgQualityScore * 100).toFixed(0)}% fidelity</span>
                   )}
                 </div>
               );
@@ -635,7 +667,7 @@ export default function Home() {
                   <select
                     value={selectedScaledownConvId || ""}
                     onChange={e => setSelectedScaledownConvId(e.target.value || null)}
-                    className="text-xs bg-[#010c0e] border border-cyan-900/50 rounded-lg px-2.5 py-1.5 text-cyan-400 cursor-pointer">
+                    className={`text-xs rounded-lg px-2.5 py-1.5 cursor-pointer ${sdSelectCls}`}>
                     <option value="">Select conversation</option>
                     {scaledownConvs.map(c => (
                       <option key={c.id} value={c.id}>{c.label}</option>
@@ -650,12 +682,12 @@ export default function Home() {
         </div>
 
         {/* ══ LEFT TABLE ══ */}
-        <div className="overflow-auto border-r-2 border-gray-800 bg-gray-950">
+        <div className={`overflow-auto border-r-2 ${dividerBorder} ${tableBg}`}>
           {renderTable(leftData, true, isLiveBaseline)}
         </div>
 
         {/* ══ RIGHT TABLE ══ */}
-        <div className="overflow-auto bg-[#010c0e]">
+        <div className={`overflow-auto ${sdTableBg}`}>
           {renderTable(rightData, false, isLiveScaledown)}
         </div>
 
