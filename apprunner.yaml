@@ -9,7 +9,7 @@ build:
       - npm run build
 
 run:
-  command: npm run start
+  command: npx next start -H 0.0.0.0
   network:
     port: 3000
     env: PORT
