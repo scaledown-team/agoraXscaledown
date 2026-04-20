@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { supabase } from "@/lib/supabase";
+import { getSupabase } from "@/lib/supabase";
 import { scoreQuality } from "@/lib/quality";
 
 export const dynamic = "force-dynamic";
@@ -23,7 +23,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Fetch traces that have both responses (shadow baseline was enabled)
-    const { data: traces, error } = await supabase
+    const { data: traces, error } = await getSupabase()
       .from("trace_events")
       .select("id, turn, response_text, shadow_response_text, quality_score")
       .eq("conversation_id", conversationId)
@@ -64,7 +64,7 @@ export async function POST(req: NextRequest) {
 
       if (result.score >= 0) {
         // Update the score in Supabase
-        await supabase
+        await getSupabase()
           .from("trace_events")
           .update({ quality_score: result.score })
           .eq("id", trace.id);

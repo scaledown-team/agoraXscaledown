@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAgoraAuthHeader } from "@/lib/utils";
 import { resetTurnCounter } from "@/lib/scaledown";
-import { supabase } from "@/lib/supabase";
+import { getSupabase } from "@/lib/supabase";
 
 /**
  * POST /api/join-conversation
@@ -41,7 +41,7 @@ export async function POST(req: NextRequest) {
     // Create a conversation record in Supabase to group trace events
     const convMode = isBaseline ? "baseline" : "scaledown";
     const convCounter = Date.now(); // used for label ordering
-    const { data: convData, error: convError } = await supabase
+    const { data: convData, error: convError } = await getSupabase()
       .from("conversations")
       .insert({ label: `Conversation`, mode: convMode })
       .select("id")
