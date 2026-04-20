@@ -198,19 +198,77 @@ export default function Home() {
       .then(r => r.ok ? r.json() : null).then(d => d && setScaledownTraceData(d)).catch(() => { });
   }, [selectedScaledownConvId]);
 
+  // ── Podcast state ─────────────────────────────────────────
+  interface PodcastResult {
+    id: string;
+    title: string;
+    podcast: string;
+    description: string;
+    thumbnail: string;
+    audioLengthSec: number;
+  }
+
+  const [podcastQuery, setPodcastQuery] = useState("");
+  const [podcastResults, setPodcastResults] = useState<PodcastResult[]>([]);
+  const [podcastSearching, setPodcastSearching] = useState(false);
+  const [selectedEpisodeId, setSelectedEpisodeId] = useState<string | null>(null);
+  const [selectedEpisodeTitle, setSelectedEpisodeTitle] = useState<string | null>(null);
+  const [podcastTranscript, setPodcastTranscript] = useState<string | null>(null);
+  const [loadingTranscript, setLoadingTranscript] = useState(false);
+
+  const searchPodcasts = useCallback(async () => {
+    if (!podcastQuery.trim()) return;
+    setPodcastSearching(true);
+    setPodcastResults([]);
+    try {
+      const res = await fetch(`/api/podcast/search?q=${encodeURIComponent(podcastQuery)}`);
+      if (res.ok) {
+        const data = await res.json();
+        setPodcastResults(data.results ?? []);
+      }
+    } catch { } finally {
+      setPodcastSearching(false);
+    }
+  }, [podcastQuery]);
+
+  const selectEpisode = useCallback(async (ep: PodcastResult) => {
+    setSelectedEpisodeId(ep.id);
+    setSelectedEpisodeTitle(ep.title);
+    setPodcastTranscript(null);
+    setLoadingTranscript(true);
+    setPodcastResults([]);
+    try {
+      const res = await fetch(`/api/podcast/episode?id=${ep.id}`);
+      if (res.ok) {
+        const data = await res.json();
+        setPodcastTranscript(data.transcript ?? data.description ?? null);
+      }
+    } catch { } finally {
+      setLoadingTranscript(false);
+    }
+  }, []);
+
+  const clearPodcast = useCallback(() => {
+    setSelectedEpisodeId(null);
+    setSelectedEpisodeTitle(null);
+    setPodcastTranscript(null);
+    setPodcastQuery("");
+    setPodcastResults([]);
+  }, []);
+
   const startBaseline = useCallback(() => {
     setLiveTraceData(null);
     lastConversationIdRef.current = null;
     setPreferredMode("baseline");
-    startConversation("baseline");
-  }, [startConversation]);
+    startConversation("baseline", podcastTranscript ?? undefined);
+  }, [startConversation, podcastTranscript]);
 
   const startScaledown = useCallback(() => {
     setLiveTraceData(null);
     lastConversationIdRef.current = null;
     setPreferredMode("scaledown");
-    startConversation("scaledown");
-  }, [startConversation]);
+    startConversation("scaledown", podcastTranscript ?? undefined);
+  }, [startConversation, podcastTranscript]);
 
   const [isDark, setIsDark] = useState(true);
 
@@ -486,6 +544,69 @@ export default function Home() {
           </div>
         )}
       </header>
+
+      {/* ── PODCAST SEARCH PANEL ── */}
+      {status === "idle" && (
+        <div className={`shrink-0 border-b ${border} ${headerBg} px-6 py-3`}>
+          {selectedEpisodeId ? (
+            <div className="flex items-center gap-3">
+              <div className="flex-1 min-w-0">
+                <p className={`text-[10px] uppercase tracking-widest ${textMuted} mb-0.5`}>Podcast context loaded</p>
+                <p className="text-xs font-semibold truncate">{selectedEpisodeTitle}</p>
+                {loadingTranscript && <p className={`text-[10px] ${textMuted}`}>Loading transcript...</p>}
+                {!loadingTranscript && podcastTranscript && (
+                  <p className={`text-[10px] ${textMuted}`}>{podcastTranscript.length.toLocaleString()} chars · agent will answer questions about this episode</p>
+                )}
+                {!loadingTranscript && !podcastTranscript && (
+                  <p className="text-[10px] text-yellow-500">No transcript available — description will be used as context</p>
+                )}
+              </div>
+              <button onClick={clearPodcast} className={`shrink-0 px-3 py-1 rounded-lg text-xs font-medium transition-colors ${btnBase}`}>
+                Clear
+              </button>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center gap-2">
+                <p className={`text-[10px] uppercase tracking-widest ${textMuted} shrink-0`}>Podcast</p>
+                <input
+                  type="text"
+                  value={podcastQuery}
+                  onChange={e => setPodcastQuery(e.target.value)}
+                  onKeyDown={e => e.key === "Enter" && searchPodcasts()}
+                  placeholder="Search for a podcast episode to discuss..."
+                  className={`flex-1 text-xs rounded-lg px-3 py-1.5 outline-none ${isDark ? "bg-gray-900 border border-gray-800 text-white placeholder-gray-600" : "bg-white border border-gray-200 text-gray-900 placeholder-gray-400"}`}
+                />
+                <button
+                  onClick={searchPodcasts}
+                  disabled={podcastSearching || !podcastQuery.trim()}
+                  className={`shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-40 ${btnBase}`}>
+                  {podcastSearching ? "Searching..." : "Search"}
+                </button>
+              </div>
+              {podcastResults.length > 0 && (
+                <div className={`rounded-xl border ${border} divide-y ${border} overflow-hidden max-h-48 overflow-y-auto`}>
+                  {podcastResults.map(ep => (
+                    <button
+                      key={ep.id}
+                      onClick={() => selectEpisode(ep)}
+                      className={`w-full text-left px-3 py-2 transition-colors ${tableHover} flex items-start gap-3`}>
+                      {ep.thumbnail && (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={ep.thumbnail} alt="" className="w-8 h-8 rounded shrink-0 mt-0.5 object-cover" />
+                      )}
+                      <div className="min-w-0">
+                        <p className="text-xs font-semibold truncate">{ep.title}</p>
+                        <p className={`text-[10px] ${textMuted} truncate`}>{ep.podcast}</p>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ── Audio unlock overlay — shown when browser blocks autoplay ── */}
       {audioAutoplayFailed && (
