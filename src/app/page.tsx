@@ -13,6 +13,7 @@ interface TraceEvent {
   totalLatencyMs: number;
   baselineMode: boolean;
   compressionSuccess: boolean;
+  qualityScore?: number | null;
 }
 
 interface Summary {
@@ -22,7 +23,9 @@ interface Summary {
   avgScaledownLatencyMs: number;
   avgGroqLatencyMs: number;
   avgTotalLatencyMs: number;
-  accuracyRate: number;
+  successfulCompressionRate: number;
+  avgQualityScore?: number | null;
+  qualityCoverage?: number;
 }
 
 interface TraceData {
@@ -41,21 +44,10 @@ interface SavedConversation {
   avgCompressionRatio: number;
   avgGroqLatencyMs: number;
   avgScaledownLatencyMs: number;
-  accuracyRate: number;
-}
-
-interface EvalConvResult {
-  id: string;
-  mode: "baseline" | "scaledown";
-  label: string;
-  turns: number;
-  totalOriginalTokens: number;
-  totalCompressedTokens: number;
-  tokensSaved: number;
-  avgCompressionRatio: number;
-  avgGroqLatencyMs: number;
-  avgScaledownLatencyMs: number;
-  avgTotalLatencyMs: number;
+  avgTotalLatencyMs?: number;
+  successfulCompressionRate?: number;
+  avgQualityScore?: number | null;
+  qualityCoverage?: number;
 }
 
 interface EvalModeAgg {
@@ -67,15 +59,21 @@ interface EvalModeAgg {
   compressionPct: number;
   avgGroqLatencyMs: number;
   avgScaledownLatencyMs: number;
+  avgTotalLatencyMs?: number;
+  avgQualityScore?: number | null;
+  avgRougeScore?: number | null;
+  qualityCoverage?: number;
+  rougeCoverage?: number;
 }
 
 interface EvalData {
-  results: EvalConvResult[];
+  results: any[];
   baseline: EvalModeAgg | null;
   scaledown: EvalModeAgg | null;
   comparison: {
     tokenSavingsPct: number;
     latencyDiffMs: number;
+    groqLatencyDiffMs?: number;
     scaledownOverheadMs: number;
   } | null;
   summary: {
@@ -85,30 +83,55 @@ interface EvalData {
     totalTurns: number;
     totalTokensSaved: number;
     overallCompressionPct: number;
+    avgQualityScore?: number | null;
+    avgRougeScore?: number | null;
+    qualityCoverage?: number;
+    rougeCoverage?: number;
   };
 }
 
-type Tab = "conversation" | "eval";
-
 export default function Home() {
   const [preferredMode, setPreferredMode] = useState<"baseline" | "scaledown">("baseline");
-  const [traceData, setTraceData] = useState<TraceData | null>(null);
+  const [liveTraceData, setLiveTraceData] = useState<TraceData | null>(null);
   const [conversations, setConversations] = useState<SavedConversation[]>([]);
-  const [conversationsLoading, setConversationsLoading] = useState(true);
-  const [selectedConvId, setSelectedConvId] = useState<string | null>(null);
-  const [selectedTraceData, setSelectedTraceData] = useState<TraceData | null>(null);
+
+  const [selectedBaselineConvId, setSelectedBaselineConvId] = useState<string | null>(null);
+  const [selectedScaledownConvId, setSelectedScaledownConvId] = useState<string | null>(null);
+  const [baselineTraceData, setBaselineTraceData] = useState<TraceData | null>(null);
+  const [scaledownTraceData, setScaledownTraceData] = useState<TraceData | null>(null);
+
   const [evalData, setEvalData] = useState<EvalData | null>(null);
   const [evalRunning, setEvalRunning] = useState(false);
-  const [evalError, setEvalError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<Tab>("conversation");
 
   const lastConversationIdRef = useRef<string | null>(null);
+  const lastModeRef = useRef<"baseline" | "scaledown">("baseline");
 
   const {
     status, mode, error, conversationId,
     audioAutoplayFailed, agentAudioReceived,
     startConversation, endConversation, unlockAudio,
   } = useConversation(preferredMode);
+
+  const runEval = useCallback(async () => {
+    setEvalRunning(true);
+    try {
+      const res = await fetch("/api/eval", { method: "POST" });
+      if (res.ok) setEvalData(await res.json());
+    } catch { } finally {
+      setEvalRunning(false);
+    }
+  }, []);
+
+  const clearHistory = useCallback(async () => {
+    if (!confirm("Delete all conversations and trace data from the database? This cannot be undone.")) return;
+    await fetch("/api/clear-history", { method: "DELETE" });
+    setEvalData(null);
+    setConversations([]);
+    setBaselineTraceData(null);
+    setScaledownTraceData(null);
+    setSelectedBaselineConvId(null);
+    setSelectedScaledownConvId(null);
+  }, []);
 
   const refreshConversations = useCallback(async () => {
     try {
@@ -117,40 +140,46 @@ export default function Home() {
         const data = await res.json();
         setConversations(data.conversations || []);
       }
-    } catch { /* ignore */ } finally {
-      setConversationsLoading(false);
-    }
+    } catch { }
   }, []);
 
-  useEffect(() => { refreshConversations(); }, [refreshConversations]);
+  useEffect(() => { refreshConversations(); runEval(); }, []);
 
-  useEffect(() => {
-    if (conversationId) lastConversationIdRef.current = conversationId;
-  }, [conversationId]);
+  useEffect(() => { if (status === "active") lastModeRef.current = mode; }, [status, mode]);
+  useEffect(() => { if (conversationId) lastConversationIdRef.current = conversationId; }, [conversationId]);
 
   useEffect(() => {
     if (status === "idle" && lastConversationIdRef.current) {
       const endedId = lastConversationIdRef.current;
-      refreshConversations().then(() => setSelectedConvId(endedId));
+      const endedMode = lastModeRef.current;
+      refreshConversations().then(() => {
+        if (endedMode === "baseline") setSelectedBaselineConvId(endedId);
+        else setSelectedScaledownConvId(endedId);
+      });
+      runEval();
     }
   }, [status]);
 
-  // Poll traces every 2s while active
+  const baselineConvs = conversations.filter(c => c.mode === "baseline" && c.turns > 0);
+  const scaledownConvs = conversations.filter(c => c.mode === "scaledown" && c.turns > 0);
+
   useEffect(() => {
-    console.log("[Poll] Effect fired: status=", status, "conversationId=", conversationId);
+    if (baselineConvs.length > 0 && !selectedBaselineConvId)
+      setSelectedBaselineConvId(baselineConvs[0].id);
+  }, [baselineConvs.length]);
+
+  useEffect(() => {
+    if (scaledownConvs.length > 0 && !selectedScaledownConvId)
+      setSelectedScaledownConvId(scaledownConvs[0].id);
+  }, [scaledownConvs.length]);
+
+  useEffect(() => {
     if (status !== "active" || !conversationId) return;
-    console.log("[Poll] Starting polling for", conversationId);
     const poll = async () => {
       try {
         const res = await fetch(`/api/traces?conversationId=${conversationId}`);
-        if (res.ok) {
-          const data = await res.json();
-          console.log("[Poll] Got", data.totalTurns, "turns");
-          setTraceData(data);
-        }
-      } catch (e) {
-        console.error("[Poll] Error:", e);
-      }
+        if (res.ok) setLiveTraceData(await res.json());
+      } catch { }
     };
     poll();
     const interval = setInterval(poll, 2000);
@@ -158,481 +187,518 @@ export default function Home() {
   }, [status, conversationId]);
 
   useEffect(() => {
-    if (!selectedConvId) { setSelectedTraceData(null); return; }
-    const load = async () => {
-      try {
-        const res = await fetch(`/api/traces?conversationId=${selectedConvId}`);
-        if (res.ok) {
-          const d = await res.json();
-          setSelectedTraceData(d);
-        }
-      } catch { /* ignore */ }
-    };
-    load();
-  }, [selectedConvId]);
+    if (!selectedBaselineConvId) { setBaselineTraceData(null); return; }
+    fetch(`/api/traces?conversationId=${selectedBaselineConvId}`)
+      .then(r => r.ok ? r.json() : null).then(d => d && setBaselineTraceData(d)).catch(() => { });
+  }, [selectedBaselineConvId]);
 
-  const handleStart = useCallback(async () => {
-    setTraceData(null);
-    setSelectedConvId(null);
-    setSelectedTraceData(null);
+  useEffect(() => {
+    if (!selectedScaledownConvId) { setScaledownTraceData(null); return; }
+    fetch(`/api/traces?conversationId=${selectedScaledownConvId}`)
+      .then(r => r.ok ? r.json() : null).then(d => d && setScaledownTraceData(d)).catch(() => { });
+  }, [selectedScaledownConvId]);
+
+  const startBaseline = useCallback(() => {
+    setLiveTraceData(null);
     lastConversationIdRef.current = null;
-    setActiveTab("conversation");
-    startConversation();
+    setPreferredMode("baseline");
+    startConversation("baseline");
   }, [startConversation]);
 
-  const runEval = useCallback(async () => {
-    setEvalRunning(true);
-    setEvalError(null);
-    setEvalData(null);
-    setActiveTab("eval");
-    try {
-      const res = await fetch("/api/eval", { method: "POST" });
-      if (!res.ok) throw new Error(`Eval failed: ${res.status}`);
-      setEvalData(await res.json());
-    } catch (err) {
-      setEvalError(String(err));
-    } finally {
-      setEvalRunning(false);
-    }
-  }, []);
+  const startScaledown = useCallback(() => {
+    setLiveTraceData(null);
+    lastConversationIdRef.current = null;
+    setPreferredMode("scaledown");
+    startConversation("scaledown");
+  }, [startConversation]);
 
-  // Display logic
-  const isLive = status === "active" && selectedConvId === null;
-  const displayData = selectedConvId ? selectedTraceData : traceData;
-  const displayTraces = displayData?.traces ?? [];
-  const displaySummary = displayData?.summary;
-  const hasTraces = displayTraces.length > 0;
-  const selectedConvMode = selectedConvId
-    ? conversations.find(c => c.id === selectedConvId)?.mode
-    : mode;
+  const [isDark, setIsDark] = useState(true);
 
-  const baselineConvs = conversations.filter(c => c.mode === "baseline" && c.turns > 0);
-  const scaledownConvs = conversations.filter(c => c.mode === "scaledown" && c.turns > 0);
-  const totalTokensSaved = displayTraces.reduce(
-    (sum, t) => sum + Math.max(0, t.originalTokens - t.compressedTokens), 0
-  );
+  const isLiveBaseline = status === "active" && mode === "baseline";
+  const isLiveScaledown = status === "active" && mode === "scaledown";
+  const leftData = isLiveBaseline ? liveTraceData : baselineTraceData;
+  const rightData = isLiveScaledown ? liveTraceData : scaledownTraceData;
 
-  const bg = "bg-gray-950";
-  const panelBg = "bg-gray-900";
-  const border = "border-gray-800";
-  const textSub = "text-gray-400";
-  const textMuted = "text-gray-600";
+  // ── Theme ─────────────────────────────────────────────────
+  const border    = isDark ? "border-gray-800"  : "border-gray-200";
+  const textMuted = isDark ? "text-gray-600"    : "text-gray-400";
+  const textSub   = isDark ? "text-gray-400"    : "text-gray-600";
 
-  return (
-    <main className={`flex h-screen ${bg} text-white overflow-hidden`}>
+  const mainBg        = isDark ? "bg-gray-950 text-white"    : "bg-gray-100 text-gray-900";
+  const headerBg      = isDark ? "bg-gray-900/50"            : "bg-white";
+  const headerBorder  = isDark ? "border-gray-800/60"        : "border-gray-200";
+  const panelBg       = isDark ? "bg-gray-950"               : "bg-white";
+  const sdPanelBg     = isDark ? "bg-cyan-950/10"            : "bg-cyan-50/40";
+  const sdBorderCol   = isDark ? "border-cyan-900/50"        : "border-cyan-200";
+  const tableBg       = isDark ? "bg-gray-950"               : "bg-white";
+  const sdTableBg     = isDark ? "bg-[#010c0e]"              : "bg-cyan-50/20";
+  const tableHeaderBg = isDark ? "bg-gray-950"               : "bg-gray-50";
+  const sdTableHdrBg  = isDark ? "bg-[#030d0f]"              : "bg-cyan-50/30";
+  const tableHover    = isDark ? "hover:bg-gray-900/40"      : "hover:bg-gray-50";
+  const sdTableHover  = isDark ? "hover:bg-cyan-950/20"      : "hover:bg-cyan-50/50";
+  const baselineTag   = isDark ? "bg-gray-800 text-gray-400" : "bg-gray-100 text-gray-600 border border-gray-300";
+  const sdTag         = isDark ? "bg-cyan-950 text-cyan-300 border border-cyan-800" : "bg-cyan-50 text-cyan-700 border border-cyan-300";
+  const baselineBar   = isDark ? "bg-gray-600"               : "bg-gray-300";
+  const baselineTotal = isDark ? "text-gray-300"             : "text-gray-800";
+  const baselineSelect= isDark ? `bg-gray-900 border ${border} ${textSub}` : `bg-white border border-gray-200 text-gray-600`;
+  const sdSelectCls   = isDark ? "bg-[#010c0e] border border-cyan-900/50 text-cyan-400" : "bg-white border border-cyan-200 text-cyan-700";
+  const btnBase       = isDark ? "bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white" : "bg-gray-200 hover:bg-gray-300 text-gray-600 hover:text-gray-900";
+  const clearBtn      = isDark ? "bg-gray-800 hover:bg-red-900/60 text-gray-600 hover:text-red-400" : "bg-gray-200 hover:bg-red-100 text-gray-500 hover:text-red-600";
+  const baselineBtn   = isDark ? "bg-gray-700 hover:bg-gray-600 text-white" : "bg-gray-700 hover:bg-gray-600 text-white";
+  const baselineBtnDis= isDark ? "bg-gray-800 text-gray-500" : "bg-gray-200 text-gray-400";
+  const sdBtnDis      = isDark ? "bg-cyan-950 text-cyan-600" : "bg-cyan-100 text-cyan-400";
+  const dividerBorder = isDark ? "border-gray-800" : "border-gray-200";
 
-      {/* ── LEFT: Controls ── */}
-      <div className={`w-72 border-r ${border} ${bg} flex flex-col p-5 gap-4 shrink-0`}>
-        <div>
-          <h1 className="text-lg font-bold tracking-tight">
-            Agora <span className="text-blue-400">×</span> ScaleDown
-          </h1>
-          <p className={`${textMuted} text-xs mt-0.5`}>Voice AI + context compression</p>
-        </div>
-
-        {/* Mode toggle */}
-        <div className={`flex gap-1 p-1 rounded-xl bg-gray-900`}>
-          <button
-            onClick={() => setPreferredMode("baseline")}
-            disabled={status !== "idle"}
-            className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all disabled:opacity-40 ${
-              preferredMode === "baseline" ? "bg-gray-700 text-white shadow" : textMuted
-            }`}
-          >Baseline</button>
-          <button
-            onClick={() => setPreferredMode("scaledown")}
-            disabled={status !== "idle"}
-            className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all disabled:opacity-40 ${
-              preferredMode === "scaledown" ? "bg-cyan-600 text-white shadow" : textMuted
-            }`}
-          >ScaleDown</button>
-        </div>
-
-        {/* Status */}
-        <div className="flex items-center gap-2">
-          <div className={`w-2 h-2 rounded-full shrink-0 ${
-            status === "active" ? "bg-green-400 animate-pulse"
-            : status === "connecting" || status === "ending" ? "bg-yellow-400 animate-pulse"
-            : "bg-gray-700"
-          }`} />
-          <span className={`text-sm ${textSub}`}>
-            {status === "idle" && "Ready"}
-            {status === "connecting" && "Connecting..."}
-            {status === "active" && `Active · ${mode === "baseline" ? "Baseline" : "ScaleDown"}`}
-            {status === "ending" && "Ending..."}
-          </span>
-        </div>
-
-        {/* Action */}
-        {status === "idle" ? (
-          <button onClick={handleStart} className="w-full py-3 bg-blue-600 hover:bg-blue-500 rounded-xl font-semibold transition-colors">
-            Start Conversation
-          </button>
-        ) : status === "active" ? (
-          <button onClick={endConversation} className="w-full py-3 bg-red-600 hover:bg-red-500 rounded-xl font-semibold transition-colors">
-            End Conversation
-          </button>
-        ) : (
-          <button disabled className="w-full py-3 rounded-xl font-semibold opacity-40 bg-gray-700">
-            {status === "connecting" ? "Connecting..." : "Ending..."}
-          </button>
-        )}
-
-        {error && <div className="p-2 bg-red-900/30 border border-red-800 rounded-lg text-red-300 text-xs">{error}</div>}
-        {audioAutoplayFailed && (
-          <button onClick={unlockAudio} className="w-full py-2.5 bg-yellow-600 hover:bg-yellow-500 rounded-xl text-sm font-medium animate-pulse">
-            Tap to Enable Audio
-          </button>
-        )}
-        {status === "active" && (
-          <p className={`text-xs ${textMuted}`}>
-            Agent audio: <span className={agentAudioReceived ? "text-green-400" : "text-yellow-400"}>
-              {agentAudioReceived ? "receiving" : "waiting..."}
-            </span>
+  // ── Per-turn trace table ──────────────────────────────────
+  function renderTable(data: TraceData | null, isBaseline: boolean, isLive: boolean) {
+    if (!data || data.traces.length === 0) {
+      return (
+        <div className="flex-1 flex items-center justify-center">
+          <p className={`text-sm ${textMuted}`}>
+            {isLive ? "Waiting for first turn..." : "No data — select or start a conversation"}
           </p>
-        )}
+        </div>
+      );
+    }
 
-        {/* Pipeline */}
-        <div className={`mt-auto rounded-xl p-3 text-xs bg-gray-900`}>
-          <p className={`font-semibold ${textMuted} mb-2 uppercase tracking-widest text-[10px]`}>Pipeline</p>
-          <div className={`space-y-1.5 ${textMuted}`}>
-            {[
-              { label: "ASR", value: "Deepgram", dot: false },
-              ...(preferredMode === "scaledown" ? [{ label: "Compress", value: "ScaleDown", dot: true }] : []),
-              { label: "LLM", value: "Groq · Llama 3.3", dot: false },
-              { label: "TTS", value: "Cartesia", dot: false },
-              { label: "Transport", value: "Agora RTC", dot: false },
-            ].map((item, i) => (
-              <div key={i} className="flex items-center gap-2">
-                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${item.dot ? "bg-cyan-500" : "bg-gray-700"}`} />
-                <span>{item.label} · <span className={item.dot ? "text-cyan-400 font-semibold" : textSub}>{item.value}</span></span>
-              </div>
+    return (
+      <div>
+        <table className="w-full text-xs">
+          <thead className={`sticky top-0 border-b ${border} ${isBaseline ? tableHeaderBg : sdTableHdrBg}`}>
+            <tr className="h-8">
+              <th className={`text-left px-3 ${textMuted} font-medium uppercase tracking-wide`}>Turn</th>
+              <th className={`text-left px-3 ${textMuted} font-medium uppercase tracking-wide`}>Tokens In</th>
+              {!isBaseline && <th className={`text-left px-3 ${textMuted} font-medium uppercase tracking-wide`}>After SD</th>}
+              {!isBaseline && <th className={`text-left px-3 ${textMuted} font-medium uppercase tracking-wide`}>Saved</th>}
+              <th className={`text-left px-3 ${textMuted} font-medium uppercase tracking-wide`}>Latency</th>
+              <th className={`text-left px-3 ${textMuted} font-medium uppercase tracking-wide`}>{isBaseline ? "Status" : "Fidelity"}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.traces.map((t) => (
+              <tr key={`${t.turn}-${t.originalTokens}`}
+                className={`border-b ${border} last:border-0 transition-colors ${isBaseline ? tableHover : sdTableHover}`}>
+                <td className={`px-3 py-2.5 font-mono ${textMuted}`}>{t.turn}</td>
+                <td className={`px-3 py-2.5 font-mono ${textSub}`}>{t.originalTokens.toLocaleString()}</td>
+                {!isBaseline && (
+                  <td className="px-3 py-2.5 font-mono text-cyan-400">
+                    {t.compressionSuccess ? t.compressedTokens.toLocaleString() : <span className={textMuted}>—</span>}
+                  </td>
+                )}
+                {!isBaseline && (
+                  <td className="px-3 py-2.5 font-semibold">
+                    {t.compressionSuccess
+                      ? <span className="text-cyan-400">{(t.compressionRatio * 100).toFixed(0)}%</span>
+                      : <span className="text-orange-400">fallback</span>}
+                  </td>
+                )}
+                <td className={`px-3 py-2.5 font-mono ${t.totalLatencyMs > 0 ? (isBaseline ? "text-gray-300" : "text-cyan-400") : textMuted}`}>
+                  {t.totalLatencyMs > 0 ? `${t.totalLatencyMs}ms` : "—"}
+                </td>
+                <td className="px-3 py-2.5">
+                  {isBaseline
+                    ? <span className={textMuted}>reference</span>
+                    : t.qualityScore != null && t.qualityScore >= 0
+                      ? <span className="text-cyan-400 font-semibold">{(t.qualityScore * 100).toFixed(0)}%</span>
+                      : t.compressionSuccess
+                        ? <span className="text-cyan-500">compressed</span>
+                        : <span className="text-orange-400">fallback</span>}
+                </td>
+              </tr>
             ))}
-          </div>
-        </div>
+          </tbody>
+        </table>
       </div>
+    );
+  }
 
-      {/* ── RIGHT: Dashboard ── */}
-      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+  // ── Main render ───────────────────────────────────────────
+  return (
+    <main className={`flex flex-col h-screen overflow-hidden ${mainBg}`}>
 
-        {/* Tab bar */}
-        <div className={`flex items-center border-b ${border} px-6 shrink-0`}>
-          <button
-            onClick={() => setActiveTab("conversation")}
-            className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
-              activeTab === "conversation"
-                ? "border-blue-500 text-white"
-                : "border-transparent text-gray-500 hover:text-gray-300"
-            }`}
-          >
-            Conversations
-          </button>
-          <button
-            onClick={() => { setActiveTab("eval"); if (!evalData && !evalRunning) runEval(); }}
-            className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
-              activeTab === "eval"
-                ? "border-purple-500 text-white"
-                : "border-transparent text-gray-500 hover:text-gray-300"
-            }`}
-          >
-            Eval Summary
-          </button>
-          <div className="ml-auto" />
+      {/* ── TOP HEADER ── */}
+      <header className={`shrink-0 border-b ${border} ${headerBg}`}>
+
+        {/* Branding row */}
+        <div className={`flex items-center justify-between px-6 py-2.5 border-b ${headerBorder}`}>
+          <div>
+            <h1 className="text-sm font-bold tracking-tight">
+              Agora <span className="text-blue-400">×</span> ScaleDown
+            </h1>
+            <p className={`text-[10px] ${textMuted}`}>Voice AI · context compression</p>
+          </div>
+          <div className="flex items-center gap-3">
+            {evalData && (
+              <p className={`text-[10px] ${textMuted}`}>
+                {evalData.summary.baselineCount} baseline · {evalData.summary.scaledownCount} scaledown · {evalData.summary.totalTurns} turns
+              </p>
+            )}
+            <button onClick={() => setIsDark(d => !d)}
+              className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors ${btnBase}`}>
+              {isDark ? "☀ Light" : "☾ Dark"}
+            </button>
+            <button onClick={runEval} disabled={evalRunning}
+              className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors ${evalRunning ? `opacity-40 ${isDark ? "bg-gray-800 text-gray-500" : "bg-gray-200 text-gray-400"}` : btnBase}`}>
+              {evalRunning ? "..." : "↻ Refresh"}
+            </button>
+            <button onClick={clearHistory} disabled={status !== "idle"}
+              className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors disabled:opacity-30 ${clearBtn}`}>
+              Clear History
+            </button>
+          </div>
         </div>
 
-        {/* ── Tab: Conversations ── */}
-        {activeTab === "conversation" && (
-          <div className="flex-1 flex flex-col p-6 gap-4 overflow-auto">
+        {/* ── Hero comparison: 3 big cards, Accuracy → Tokens → Latency ── */}
+        {evalData && evalData.baseline && evalData.scaledown ? (() => {
+          const b = evalData.baseline;
+          const s = evalData.scaledown;
+          const latencyDiff = (s.avgTotalLatencyMs ?? 0) - (b.avgTotalLatencyMs ?? 0);
+          const tokensSaved = b.totalOriginalTokens - s.totalCompressedTokens;
+          const compressionPct = b.totalOriginalTokens > 0
+            ? Number(((tokensSaved / b.totalOriginalTokens) * 100).toFixed(1))
+            : 0;
+          const fidelity = evalData.summary.avgQualityScore ?? evalData.scaledown?.avgQualityScore ?? null;
+          const rouge = evalData.summary.avgRougeScore ?? evalData.scaledown?.avgRougeScore ?? null;
 
-            {/* Conversation selector */}
-            <div className="flex gap-3 items-center flex-wrap shrink-0">
-              {status === "active" && (
-                <button
-                  onClick={() => setSelectedConvId(null)}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
-                    selectedConvId === null
-                      ? "bg-green-900/40 text-green-400 border-green-800"
-                      : "bg-gray-800/60 text-gray-500 hover:text-green-400 border-transparent"
-                  }`}
-                >● Live</button>
-              )}
-              {conversationsLoading && status !== "active" && <span className={`text-xs ${textMuted}`}>Loading...</span>}
-              {baselineConvs.length > 0 && (
-                <select
-                  value={selectedConvId && baselineConvs.some(c => c.id === selectedConvId) ? selectedConvId : ""}
-                  onChange={(e) => setSelectedConvId(e.target.value || null)}
-                  className="px-3 py-1.5 rounded-lg text-xs font-medium border bg-gray-800 text-gray-300 border-gray-700 cursor-pointer"
-                >
-                  <option value="">Baseline...</option>
-                  {baselineConvs.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
-                </select>
-              )}
-              {scaledownConvs.length > 0 && (
-                <select
-                  value={selectedConvId && scaledownConvs.some(c => c.id === selectedConvId) ? selectedConvId : ""}
-                  onChange={(e) => setSelectedConvId(e.target.value || null)}
-                  className="px-3 py-1.5 rounded-lg text-xs font-medium border bg-gray-800 text-cyan-400 border-cyan-900 cursor-pointer"
-                >
-                  <option value="">ScaleDown...</option>
-                  {scaledownConvs.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
-                </select>
-              )}
-              {selectedConvId && status !== "active" && (
-                <button onClick={() => setSelectedConvId(null)} className="text-xs text-gray-500 hover:text-gray-300">
-                  ← clear
-                </button>
-              )}
-            </div>
+          return (
+            <div className="grid grid-cols-3 divide-x divide-gray-800">
 
-            {hasTraces ? (
-              <>
-                {/* 3 key metric cards */}
-                <div className="grid grid-cols-3 gap-3 shrink-0">
-                  <div className={`${panelBg} rounded-xl p-4 border ${border}`}>
-                    <p className={`${textMuted} text-xs uppercase tracking-widest`}>Tokens saved</p>
-                    <p className="text-3xl font-bold text-cyan-400 mt-2">{totalTokensSaved.toLocaleString()}</p>
-                    <p className={`${textMuted} text-xs mt-1`}>
-                      {selectedConvMode === "baseline" ? "no compression" : `${(displaySummary?.avgCompressionRatio ?? 0) * 100 | 0}% avg reduction`}
-                    </p>
-                  </div>
-                  <div className={`${panelBg} rounded-xl p-4 border ${border}`}>
-                    <p className={`${textMuted} text-xs uppercase tracking-widest`}>LLM latency</p>
-                    <p className="text-3xl font-bold text-yellow-400 mt-2">
-                      {displaySummary && displaySummary.avgGroqLatencyMs > 0
-                        ? `${displaySummary.avgGroqLatencyMs}ms` : "—"}
-                    </p>
-                    <p className={`${textMuted} text-xs mt-1`}>avg Groq response time</p>
-                  </div>
-                  <div className={`${panelBg} rounded-xl p-4 border ${border}`}>
-                    <p className={`${textMuted} text-xs uppercase tracking-widest`}>Accuracy</p>
-                    <p className="text-3xl font-bold text-green-400 mt-2">
-                      {selectedConvMode === "baseline"
-                        ? "100%"
-                        : `${((displaySummary?.accuracyRate ?? 1) * 100).toFixed(0)}%`}
-                    </p>
-                    <p className={`${textMuted} text-xs mt-1`}>
-                      {selectedConvMode === "baseline" ? "baseline (no compression)" : "compression success"}
-                    </p>
-                  </div>
-                </div>
-
-                {/* Per-turn table */}
-                <div className={`${panelBg} rounded-xl border ${border} overflow-auto flex-1`}>
-                  <table className="w-full text-sm">
-                    <thead className={`sticky top-0 ${panelBg} border-b ${border}`}>
-                      <tr>
-                        {["Turn", "Context", "After SD", "Saved", "LLM latency", "Status"].map(h => (
-                          <th key={h} className={`text-left px-4 py-3 ${textMuted} font-medium text-xs uppercase tracking-wide`}>{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {displayTraces.map((t) => {
-                        return (
-                          <tr key={`${t.turn}-${t.originalTokens}`} className={`border-b ${border} last:border-0 hover:bg-gray-800/40 transition-colors`}>
-                            <td className={`px-4 py-3 ${textMuted} text-sm`}>
-                              {t.turn}
-                              <span className={`ml-2 text-xs px-1.5 py-0.5 rounded-full ${
-                                t.baselineMode ? "bg-gray-800 text-gray-500" : "bg-cyan-950 text-cyan-400 border border-cyan-900"
-                              }`}>
-                                {t.baselineMode ? "Baseline" : "ScaleDown"}
-                              </span>
-                            </td>
-                            <td className={`px-4 py-3 ${textSub} font-mono text-sm`}>
-                              {t.originalTokens.toLocaleString()}
-                            </td>
-                            <td className="px-4 py-3 font-mono text-sm">
-                              {t.baselineMode
-                                ? <span className={textMuted}>—</span>
-                                : <span className="text-cyan-400">{t.compressedTokens.toLocaleString()}</span>}
-                            </td>
-                            <td className="px-4 py-3">
-                              {t.baselineMode ? (
-                                <span className={textMuted}>—</span>
-                              ) : (
-                                <span className={`font-semibold ${t.compressionRatio >= 0.2 ? "text-green-400" : "text-yellow-400"}`}>
-                                  {(t.compressionRatio * 100).toFixed(0)}%
-                                </span>
-                              )}
-                            </td>
-                            <td className={`px-4 py-3 font-mono text-sm ${t.groqLatencyMs > 0 ? "text-yellow-400" : textMuted}`}>
-                              {t.groqLatencyMs > 0 ? `${t.groqLatencyMs}ms` : "—"}
-                            </td>
-                            <td className="px-4 py-3 text-sm">
-                              {t.baselineMode ? (
-                                <span className={textSub}>baseline</span>
-                              ) : t.compressionSuccess ? (
-                                <span className="text-green-400">ok</span>
-                              ) : (
-                                <span className="text-orange-400">fallback</span>
-                              )}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </>
-            ) : (
-              <div className="flex-1 flex flex-col items-center justify-center text-center gap-4">
-                <p className={`${textSub} font-semibold`}>No data yet</p>
-                <p className={`${textMuted} text-sm max-w-xs`}>
-                  {preferredMode === "scaledown"
-                    ? "Start a conversation to see live token savings."
-                    : "Baseline captures raw usage — run both modes to compare."}
+              {/* 1 — ACCURACY (priority #1) */}
+              <div className="px-8 py-5 flex flex-col gap-3">
+                <p className={`text-[10px] uppercase tracking-widest ${textMuted}`}>Answer Quality Score</p>
+                <p className={`text-[10px] ${textMuted} -mt-2`}>
+                  How similar are the answers with and without compression? Scored by an LLM judge.
                 </p>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* ── Tab: Eval ── */}
-        {activeTab === "eval" && (
-          <div className="flex-1 flex flex-col p-6 gap-4 overflow-auto">
-
-            {evalRunning && (
-              <div className="flex-1 flex flex-col items-center justify-center gap-3">
-                <div className="w-8 h-8 border-2 border-purple-400 border-t-transparent rounded-full animate-spin" />
-                <p className={`${textSub} text-sm`}>Analyzing conversations...</p>
-              </div>
-            )}
-
-            {evalError && (
-              <div className="p-3 bg-red-900/30 border border-red-800 rounded-lg text-red-300 text-xs">{evalError}</div>
-            )}
-
-            {evalData && !evalRunning && (
-              <>
-                <div className="flex items-center justify-between shrink-0">
+                <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <h3 className="text-base font-semibold">All Conversations — Summary</h3>
-                    <p className={`${textMuted} text-xs mt-0.5`}>
-                      {evalData.summary.totalConversations} conversations · {evalData.summary.totalTurns} total turns
-                    </p>
+                    <p className={`text-[10px] uppercase tracking-widest ${textMuted} mb-1`}>Baseline</p>
+                    {evalData.baseline?.avgQualityScore != null ? (
+                      <>
+                        <p className="text-3xl font-black text-gray-300">{(evalData.baseline.avgQualityScore * 100).toFixed(0)}%</p>
+                        <p className={`text-[10px] ${textMuted} mt-0.5`}>vs ScaleDown shadow · LLM-judge</p>
+                      </>
+                    ) : (
+                      <>
+                        <p className="text-3xl font-black text-gray-500">—</p>
+                        <p className={`text-[10px] ${textMuted} mt-0.5`}>run baseline conversation</p>
+                      </>
+                    )}
                   </div>
-                  <button onClick={runEval} className="px-3 py-1.5 rounded-lg text-xs font-medium bg-purple-900/50 text-purple-300 hover:bg-purple-800/50 border border-purple-800">
-                    Refresh
-                  </button>
-                </div>
-
-                {/* Key metrics */}
-                <div className="grid grid-cols-3 gap-3 shrink-0">
-                  <div className={`${panelBg} rounded-xl p-4 border ${border}`}>
-                    <p className={`${textMuted} text-xs uppercase tracking-widest`}>Token savings</p>
-                    <p className="text-3xl font-bold text-cyan-400 mt-2">{evalData.summary.overallCompressionPct}%</p>
-                    <p className={`${textMuted} text-xs mt-1`}>{evalData.summary.totalTokensSaved.toLocaleString()} tokens saved</p>
-                  </div>
-                  <div className={`${panelBg} rounded-xl p-4 border ${border}`}>
-                    <p className={`${textMuted} text-xs uppercase tracking-widest`}>LLM latency</p>
-                    <p className="text-3xl font-bold text-yellow-400 mt-2">
-                      {evalData.scaledown ? `${evalData.scaledown.avgGroqLatencyMs}ms` : "—"}
-                    </p>
-                    <p className={`${textMuted} text-xs mt-1`}>
-                      {evalData.baseline ? `baseline: ${evalData.baseline.avgGroqLatencyMs}ms` : "no baseline yet"}
-                    </p>
-                  </div>
-                  <div className={`${panelBg} rounded-xl p-4 border ${border}`}>
-                    <p className={`${textMuted} text-xs uppercase tracking-widest`}>Conversations</p>
-                    <p className="text-3xl font-bold text-blue-400 mt-2">{evalData.summary.totalConversations}</p>
-                    <p className={`${textMuted} text-xs mt-1`}>
-                      {evalData.summary.baselineCount} baseline · {evalData.summary.scaledownCount} scaledown
-                    </p>
+                  <div>
+                    <p className="text-[10px] uppercase tracking-widest text-cyan-900 mb-1">ScaleDown</p>
+                    {fidelity != null ? (
+                      <>
+                        <p className="text-3xl font-black text-cyan-400">{(fidelity * 100).toFixed(0)}%</p>
+                        <p className="text-[10px] text-cyan-700 mt-0.5">LLM-judge · {rouge != null ? `${(rouge * 100).toFixed(0)}% ROUGE-1` : "semantic match"}</p>
+                      </>
+                    ) : (
+                      <>
+                        <p className="text-3xl font-black text-gray-600">—</p>
+                        <p className={`text-[10px] ${textMuted} mt-0.5`}>run ScaleDown conversation</p>
+                      </>
+                    )}
                   </div>
                 </div>
+              </div>
 
-                {/* Side-by-side comparison */}
-                {evalData.baseline && evalData.scaledown && evalData.comparison && (
-                  <div className={`rounded-xl p-4 border border-cyan-900 bg-cyan-950/30`}>
-                    <p className="text-xs font-semibold uppercase tracking-widest text-cyan-400 mb-3">
-                      Baseline vs ScaleDown
-                    </p>
-                    <div className="grid grid-cols-3 gap-4 text-sm">
-                      <div>
-                        <p className={textMuted}>Avg tokens / turn</p>
-                        <p className={textSub}>
-                          {Math.round(evalData.baseline.totalOriginalTokens / evalData.baseline.totalTurns)}
-                          <span className="text-cyan-400"> → {Math.round(evalData.scaledown.totalCompressedTokens / evalData.scaledown.totalTurns)}</span>
-                        </p>
+              {/* 2 — TOKENS */}
+              <div className="px-8 py-5 flex flex-col gap-4">
+                <p className={`text-[10px] uppercase tracking-widest ${textMuted}`}>Tokens Sent to Groq · Same Conversation</p>
+                <div className="space-y-3">
+                  <div>
+                    <div className="flex justify-between text-xs mb-1">
+                      <span className={textMuted}>Baseline</span>
+                      <span className={textSub}>{b.totalOriginalTokens.toLocaleString()}</span>
+                    </div>
+                    <div className={`h-5 rounded w-full ${baselineBar}`} />
+                  </div>
+                  <div>
+                    <div className="flex justify-between text-xs mb-1">
+                      <span className="text-cyan-400 font-semibold">ScaleDown</span>
+                      <span className="text-cyan-400 font-semibold">{s.totalCompressedTokens.toLocaleString()} <span className="text-cyan-700">↓ {compressionPct}%</span></span>
+                    </div>
+                    <div className="h-5 bg-gray-800 rounded overflow-hidden">
+                      <div
+                        className="h-full bg-cyan-500 rounded"
+                        style={{ width: `${100 - compressionPct}%` }}
+                      />
+                    </div>
+                  </div>
+                </div>
+                <p className={`text-[10px] ${textMuted}`}>{tokensSaved.toLocaleString()} tokens never reached Groq</p>
+              </div>
+
+              {/* 3 — LATENCY BREAKDOWN */}
+              <div className="px-8 py-5 flex flex-col gap-3">
+                <p className={`text-[10px] uppercase tracking-widest ${textMuted}`}>Avg Latency · Per Turn</p>
+                <div className="grid grid-cols-2 gap-6">
+                  {/* Baseline */}
+                  <div>
+                    <p className={`text-[10px] uppercase tracking-widest ${textMuted} mb-2`}>Baseline</p>
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-xs">
+                        <span className={textMuted}>Groq</span>
+                        <span className={textSub}>{b.avgGroqLatencyMs}ms</span>
                       </div>
-                      <div>
-                        <p className={textMuted}>Avg LLM latency</p>
-                        <p className={textSub}>
-                          {evalData.baseline.avgGroqLatencyMs}ms
-                          <span className="text-cyan-400"> → {evalData.scaledown.avgGroqLatencyMs}ms</span>
-                        </p>
+                      <div className="flex justify-between text-xs">
+                        <span className={textMuted}>Overhead</span>
+                        <span className={textMuted}>0ms</span>
                       </div>
-                      <div>
-                        <p className={textMuted}>ScaleDown overhead</p>
-                        <p className={textSub}>{evalData.comparison.scaledownOverheadMs}ms avg</p>
+                      <div className={`h-px bg-gray-800 my-1`} />
+                      <div className="flex justify-between">
+                        <span className={`text-xs font-semibold ${textSub}`}>Total</span>
+                        <span className={`text-base font-black ${baselineTotal}`}>{b.avgTotalLatencyMs ?? "—"}ms</span>
                       </div>
                     </div>
                   </div>
-                )}
-
-                {!evalData.baseline && (
-                  <div className="rounded-lg p-3 border border-yellow-900 bg-yellow-950/30">
-                    <p className="text-xs text-yellow-400">Run baseline conversations to see side-by-side comparison.</p>
+                  {/* ScaleDown */}
+                  <div>
+                    <p className="text-[10px] uppercase tracking-widest text-cyan-900 mb-2">ScaleDown</p>
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-xs">
+                        <span className="text-cyan-900">Groq</span>
+                        <span className="text-cyan-400">{s.avgGroqLatencyMs}ms</span>
+                      </div>
+                      <div className="flex justify-between text-xs">
+                        <span className="text-cyan-900">ScaleDown</span>
+                        <span className="text-cyan-400">{s.avgScaledownLatencyMs}ms</span>
+                      </div>
+                      <div className="h-px bg-cyan-900/30 my-1" />
+                      <div className="flex justify-between">
+                        <span className="text-xs font-semibold text-cyan-900">Total</span>
+                        <span className="text-base font-black text-cyan-400">{s.avgTotalLatencyMs ?? "—"}ms</span>
+                      </div>
+                    </div>
                   </div>
-                )}
-
-                {/* Per-conversation table */}
-                <div className={`${panelBg} rounded-xl border ${border} overflow-auto flex-1`}>
-                  <table className="w-full text-sm">
-                    <thead className={`sticky top-0 ${panelBg} border-b ${border}`}>
-                      <tr>
-                        {["Conversation", "Mode", "Turns", "Tokens", "Saved", "Avg latency"].map(h => (
-                          <th key={h} className={`text-left px-4 py-3 ${textMuted} font-medium text-xs uppercase tracking-wide`}>{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {evalData.results.map((r) => (
-                        <tr key={r.id} className={`border-b ${border} last:border-0 hover:bg-gray-800/40 transition-colors`}>
-                          <td className="px-4 py-3 font-medium text-sm">{r.label}</td>
-                          <td className="px-4 py-3">
-                            <span className={`text-xs px-2 py-0.5 rounded-full ${
-                              r.mode === "scaledown"
-                                ? "bg-cyan-950 text-cyan-400 border border-cyan-900"
-                                : "bg-gray-800 text-gray-400"
-                            }`}>{r.mode === "scaledown" ? "ScaleDown" : "Baseline"}</span>
-                          </td>
-                          <td className={`px-4 py-3 ${textSub}`}>{r.turns}</td>
-                          <td className="px-4 py-3 font-mono text-sm">
-                            <span className={textSub}>{r.totalOriginalTokens.toLocaleString()}</span>
-                            {r.mode === "scaledown" && (
-                              <span className="text-cyan-400"> → {r.totalCompressedTokens.toLocaleString()}</span>
-                            )}
-                          </td>
-                          <td className="px-4 py-3">
-                            {r.mode === "scaledown" ? (
-                              <span className={`font-semibold ${r.avgCompressionRatio > 0.2 ? "text-green-400" : "text-yellow-400"}`}>
-                                {(r.avgCompressionRatio * 100).toFixed(0)}%
-                              </span>
-                            ) : <span className={textMuted}>—</span>}
-                          </td>
-                          <td className={`px-4 py-3 font-mono text-sm text-yellow-400`}>
-                            {r.avgGroqLatencyMs}ms
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
                 </div>
-              </>
-            )}
-
-            {!evalData && !evalRunning && !evalError && (
-              <div className="flex-1 flex flex-col items-center justify-center gap-3">
-                <p className={`${textSub} font-semibold`}>No eval data</p>
-                <button onClick={runEval} className="px-4 py-2 bg-purple-600 hover:bg-purple-500 rounded-lg text-sm font-medium">
-                  Analyze Conversations
-                </button>
+                <p className={`text-[10px] ${textMuted}`}>
+                  +{latencyDiff}ms overhead today · closes as context grows (fewer tokens = faster Groq)
+                </p>
               </div>
-            )}
+
+            </div>
+          );
+        })() : (
+          <div className="px-6 py-4 flex items-center gap-3">
+            <p className={`text-xs ${textMuted}`}>
+              {evalRunning ? "Calculating..." : "Run a baseline and a ScaleDown conversation to see the comparison"}
+            </p>
           </div>
         )}
+      </header>
+
+      {/* ── Audio unlock overlay — shown when browser blocks autoplay ── */}
+      {audioAutoplayFailed && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm">
+          <div className="bg-gray-900 border border-yellow-500/50 rounded-2xl px-10 py-8 flex flex-col items-center gap-4 shadow-2xl">
+            <div className="text-4xl">🔊</div>
+            <p className="text-white font-bold text-lg">Browser blocked audio</p>
+            <p className="text-gray-400 text-sm text-center max-w-xs">
+              Click below to enable the agent's voice. This is a one-time Chrome autoplay requirement.
+            </p>
+            <button
+              onClick={unlockAudio}
+              className="mt-2 px-8 py-3 bg-yellow-500 hover:bg-yellow-400 text-black font-bold rounded-xl text-base transition-colors animate-pulse"
+            >
+              Enable Audio
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── MAIN: two-column grid — headers share row 1, tables share row 2 ── */}
+      <div className="flex-1 overflow-hidden grid grid-cols-2" style={{ gridTemplateRows: "auto 1fr" }}>
+
+        {/* ══════════════════ LEFT HEADER: BASELINE ══════════════════ */}
+        <div className={`border-b border-r-2 ${border} px-5 pt-4 pb-3 ${panelBg}`}>
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="flex items-center gap-2 mb-1">
+                  <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full uppercase tracking-widest ${baselineTag}`}>
+                    Baseline
+                  </span>
+                  {isLiveBaseline && (
+                    <span className="flex items-center gap-1 text-xs text-green-400">
+                      <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse inline-block" />
+                      Live
+                    </span>
+                  )}
+                </div>
+                <p className={`text-[11px] ${textMuted}`}>
+                  Raw Agora agent · no compression · direct to Groq
+                </p>
+                <p className={`text-[10px] ${textMuted} mt-0.5`}>
+                  ASR: Deepgram · LLM: Groq Llama 3.3 · TTS: Cartesia
+                </p>
+              </div>
+
+              {/* Baseline action */}
+              <div className="shrink-0 flex flex-col items-end gap-1.5">
+                {status === "idle" ? (
+                  <button onClick={startBaseline}
+                    className={`px-4 py-2 rounded-xl text-xs font-semibold transition-colors whitespace-nowrap ${baselineBtn}`}>
+                    Start Baseline
+                  </button>
+                ) : isLiveBaseline ? (
+                  <button onClick={endConversation}
+                    className="px-4 py-2 bg-red-700 hover:bg-red-600 rounded-xl text-xs font-semibold transition-colors text-white whitespace-nowrap">
+                    End Session
+                  </button>
+                ) : (
+                  <button disabled
+                    className={`px-4 py-2 rounded-xl text-xs font-semibold opacity-40 whitespace-nowrap ${baselineBtnDis}`}>
+                    {status === "connecting" ? "Connecting..." : status === "ending" ? "Ending..." : "ScaleDown active"}
+                  </button>
+                )}
+                {isLiveBaseline && (
+                  <p className={`text-[10px] ${agentAudioReceived ? "text-green-400" : "text-yellow-400"}`}>
+                    {agentAudioReceived ? "● audio receiving" : "○ waiting for audio..."}
+                  </p>
+                )}
+                {audioAutoplayFailed && isLiveBaseline && (
+                  <button onClick={unlockAudio} className="px-3 py-1 bg-yellow-600 hover:bg-yellow-500 rounded-lg text-xs font-medium animate-pulse">
+                    Enable Audio
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {leftData && leftData.traces.length > 0 && (
+              <div className={`mt-3 flex items-center gap-6 text-xs ${textMuted}`}>
+                <span>{leftData.traces.reduce((s, t) => s + t.originalTokens, 0).toLocaleString()} tokens · {leftData.totalTurns} turns</span>
+                <span>avg {leftData.summary.avgTotalLatencyMs > 0 ? `${leftData.summary.avgTotalLatencyMs}ms` : "—"} latency</span>
+              </div>
+            )}
+
+            {/* Baseline conv selector */}
+            {!isLiveBaseline && (
+              <div className="mt-3 flex items-center gap-2">
+                {baselineConvs.length > 0 ? (
+                  <select
+                    value={selectedBaselineConvId || ""}
+                    onChange={e => setSelectedBaselineConvId(e.target.value || null)}
+                    className={`text-xs rounded-lg px-2.5 py-1.5 cursor-pointer ${baselineSelect}`}>
+                    <option value="">Select conversation</option>
+                    {baselineConvs.map(c => (
+                      <option key={c.id} value={c.id}>{c.label}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <p className={`text-xs ${textMuted}`}>No baseline conversations yet</p>
+                )}
+                {leftData && <span className={`text-[10px] ${textMuted} ml-auto`}>{leftData.totalTurns} turns</span>}
+              </div>
+            )}
+        </div>
+
+        {/* ══════════════════ RIGHT HEADER: SCALEDOWN ══════════════════ */}
+        <div className={`border-b px-5 pt-4 pb-3 ${sdPanelBg} ${sdBorderCol}`}>
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="flex items-center gap-2 mb-1">
+                  <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full uppercase tracking-widest ${sdTag}`}>
+                    ScaleDown
+                  </span>
+                  {isLiveScaledown && (
+                    <span className="flex items-center gap-1 text-xs text-green-400">
+                      <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse inline-block" />
+                      Live
+                    </span>
+                  )}
+                </div>
+                <p className={`text-[11px] text-cyan-700`}>
+                  Agora agent · ScaleDown compression → Groq
+                </p>
+                <p className={`text-[10px] text-cyan-900 mt-0.5`}>
+                  ASR: Deepgram · <span className="text-cyan-600 font-semibold">Compress: ScaleDown</span> · LLM: Groq Llama 3.3 · TTS: Cartesia
+                </p>
+              </div>
+
+              {/* ScaleDown action */}
+              <div className="shrink-0 flex flex-col items-end gap-1.5">
+                {status === "idle" ? (
+                  <button onClick={startScaledown}
+                    className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 rounded-xl text-xs font-semibold transition-colors text-white whitespace-nowrap">
+                    Start ScaleDown
+                  </button>
+                ) : isLiveScaledown ? (
+                  <button onClick={endConversation}
+                    className="px-4 py-2 bg-red-700 hover:bg-red-600 rounded-xl text-xs font-semibold transition-colors text-white whitespace-nowrap">
+                    End Session
+                  </button>
+                ) : (
+                  <button disabled
+                    className={`px-4 py-2 rounded-xl text-xs font-semibold opacity-40 whitespace-nowrap ${sdBtnDis}`}>
+                    {status === "connecting" ? "Connecting..." : status === "ending" ? "Ending..." : "Baseline active"}
+                  </button>
+                )}
+                {isLiveScaledown && (
+                  <p className={`text-[10px] ${agentAudioReceived ? "text-green-400" : "text-yellow-400"}`}>
+                    {agentAudioReceived ? "● audio receiving" : "○ waiting for audio..."}
+                  </p>
+                )}
+                {audioAutoplayFailed && isLiveScaledown && (
+                  <button onClick={unlockAudio} className="px-3 py-1 bg-yellow-600 hover:bg-yellow-500 rounded-lg text-xs font-medium animate-pulse">
+                    Enable Audio
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {rightData && rightData.traces.length > 0 && (() => {
+              const totalIn = rightData.traces.reduce((s, t) => s + t.originalTokens, 0);
+              const totalOut = rightData.traces.reduce((s, t) => s + t.compressedTokens, 0);
+              const pct = totalIn > 0 ? (((totalIn - totalOut) / totalIn) * 100) | 0 : 0;
+              return (
+                <div className={`mt-3 flex items-center gap-6 text-xs text-cyan-900`}>
+                  <span className="text-cyan-400 font-semibold">{pct}% tokens compressed</span>
+                  <span>avg {rightData.summary.avgTotalLatencyMs > 0 ? `${rightData.summary.avgTotalLatencyMs}ms` : "—"} latency</span>
+                  {rightData.summary.avgQualityScore != null && (
+                    <span className="text-cyan-400 font-semibold">{(rightData.summary.avgQualityScore * 100).toFixed(0)}% fidelity</span>
+                  )}
+                </div>
+              );
+            })()}
+
+            {/* ScaleDown conv selector */}
+            {!isLiveScaledown && (
+              <div className="mt-3 flex items-center gap-2">
+                {scaledownConvs.length > 0 ? (
+                  <select
+                    value={selectedScaledownConvId || ""}
+                    onChange={e => setSelectedScaledownConvId(e.target.value || null)}
+                    className={`text-xs rounded-lg px-2.5 py-1.5 cursor-pointer ${sdSelectCls}`}>
+                    <option value="">Select conversation</option>
+                    {scaledownConvs.map(c => (
+                      <option key={c.id} value={c.id}>{c.label}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <p className={`text-xs text-cyan-900`}>No ScaleDown conversations yet</p>
+                )}
+                {rightData && <span className={`text-[10px] text-cyan-900 ml-auto`}>{rightData.totalTurns} turns</span>}
+              </div>
+            )}
+        </div>
+
+        {/* ══ LEFT TABLE ══ */}
+        <div className={`overflow-auto border-r-2 ${dividerBorder} ${tableBg}`}>
+          {renderTable(leftData, true, isLiveBaseline)}
+        </div>
+
+        {/* ══ RIGHT TABLE ══ */}
+        <div className={`overflow-auto ${sdTableBg}`}>
+          {renderTable(rightData, false, isLiveScaledown)}
+        </div>
+
       </div>
+
+      {/* Global error / audio */}
+      {error && (
+        <div className="fixed bottom-4 left-4 right-4 max-w-sm p-3 bg-red-900/90 border border-red-700 rounded-xl text-red-300 text-xs z-50">
+          {error}
+        </div>
+      )}
     </main>
   );
 }

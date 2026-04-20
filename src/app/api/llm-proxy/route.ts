@@ -2,6 +2,117 @@ import { NextRequest, NextResponse } from "next/server";
 import { compressContext, getAndIncrementTurn } from "@/lib/scaledown";
 import { logTrace } from "@/lib/tracing";
 import { calculateCost } from "@/lib/pricing";
+import { scoreQuality } from "@/lib/quality";
+
+/**
+ * Shared Supabase PATCH helper for writing quality scores back to a trace row.
+ */
+async function patchTraceQuality(
+  conversationId: string,
+  turn: number,
+  responseText: string,
+  shadowResponseText: string,
+  qualityScore: number | null
+): Promise<void> {
+  const res = await fetch(
+    `${process.env.NEXT_PUBLIC_SUPABASE_URL}/rest/v1/trace_events?conversation_id=eq.${encodeURIComponent(conversationId)}&turn=eq.${turn}`,
+    {
+      method: "PATCH",
+      headers: {
+        apikey: process.env.SUPABASE_SERVICE_ROLE_KEY!,
+        Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY!}`,
+        "Content-Type": "application/json",
+        Prefer: "return=minimal",
+      },
+      body: JSON.stringify({ response_text: responseText, shadow_response_text: shadowResponseText, quality_score: qualityScore }),
+    }
+  );
+  if (!res.ok) console.warn("[patchTraceQuality] PATCH failed:", res.status, await res.text());
+  else console.log(`[patchTraceQuality] Turn ${turn} patched — quality: ${qualityScore ?? "n/a"}`);
+}
+
+/**
+ * For ScaleDown turns: shadow = uncompressed Groq call. Scores ScaleDown vs uncompressed.
+ * Fire-and-forget.
+ */
+async function runShadowAndPatch(
+  responseText: string,
+  messages: any[],
+  model: string,
+  body: any,
+  conversationId: string,
+  turn: number,
+  latestUserMessage: string
+): Promise<void> {
+  const llmUrl = `${process.env.LLM_BASE_URL}/chat/completions`;
+
+  // 1. Call Groq non-streaming with original (uncompressed) messages
+  const shadowRes = await fetch(llmUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${process.env.LLM_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model,
+      messages,
+      temperature: body.temperature,
+      max_tokens: body.max_tokens,
+      stream: false,
+    }),
+  });
+  if (!shadowRes.ok) {
+    console.warn("[runShadowAndPatch] Shadow Groq call failed:", shadowRes.status);
+    return;
+  }
+  const shadowData = await shadowRes.json();
+  const shadowResponseText = shadowData.choices?.[0]?.message?.content || "";
+
+  // 2. Score + patch
+  const qualityResult = await scoreQuality(responseText, shadowResponseText, latestUserMessage);
+  await patchTraceQuality(conversationId, turn, responseText, shadowResponseText,
+    qualityResult.score >= 0 ? qualityResult.score : null);
+}
+
+/**
+ * For Baseline turns: shadow = ScaleDown-compressed Groq call. Scores baseline vs compressed.
+ * Fire-and-forget.
+ */
+async function runBaselineShadowAndPatch(
+  responseText: string,
+  messages: any[],
+  model: string,
+  body: any,
+  conversationId: string,
+  turn: number,
+  latestUserMessage: string
+): Promise<void> {
+  const llmUrl = `${process.env.LLM_BASE_URL}/chat/completions`;
+
+  // 1. Compress the same messages with ScaleDown
+  const { messages: compressedMessages, compressionSuccess } = await compressContext(messages, { targetModel: model });
+  if (!compressionSuccess) {
+    console.warn("[runBaselineShadowAndPatch] ScaleDown compression failed, skipping");
+    return;
+  }
+
+  // 2. Call Groq with compressed messages (what ScaleDown would have sent)
+  const shadowRes = await fetch(llmUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${process.env.LLM_API_KEY}` },
+    body: JSON.stringify({ model, messages: compressedMessages, temperature: body.temperature, max_tokens: body.max_tokens, stream: false }),
+  });
+  if (!shadowRes.ok) {
+    console.warn("[runBaselineShadowAndPatch] Shadow Groq call failed:", shadowRes.status);
+    return;
+  }
+  const shadowResponseText = (await shadowRes.json()).choices?.[0]?.message?.content || "";
+
+  // 3. Score baseline response vs compressed response + patch
+  const qualityResult = await scoreQuality(responseText, shadowResponseText, latestUserMessage);
+  await patchTraceQuality(conversationId, turn, responseText, shadowResponseText,
+    qualityResult.score >= 0 ? qualityResult.score : null);
+}
 
 /**
  * POST /api/llm-proxy
@@ -74,31 +185,54 @@ export async function POST(req: NextRequest) {
     }
 
     // ---- STEP 3: Parse response and extract REAL token counts ----
-    // For streaming, we can't extract usage — log with estimates and return stream
+    // Streaming: tap the SSE stream to collect responseText, then log after stream ends
     if (stream) {
-      const turn = getAndIncrementTurn();
-      await logTrace({
-        turn,
-        timestamp: Date.now(),
-        originalTokens,
-        compressedTokens,
-        compressionRatio,
-        scaledownLatencyMs,
-        groqLatencyMs,
-        totalLatencyMs,
-        model,
-        baselineMode: isBaseline,
-        compressionSuccess,
-        tokenSource: "estimate",
-      }, conversationId);
+      const turn = getAndIncrementTurn(conversationId);
+      const decoder = new TextDecoder();
+      let collectedText = "";
 
-      const responseHeaders = new Headers();
-      responseHeaders.set("Content-Type", "text/event-stream");
-      responseHeaders.set("Cache-Control", "no-cache");
-      responseHeaders.set("Connection", "keep-alive");
-      return new NextResponse(llmResponse.body, {
+      const tapStream = new TransformStream({
+        transform(chunk, controller) {
+          controller.enqueue(chunk);
+          // Parse SSE chunks to extract response content
+          const text = decoder.decode(chunk, { stream: true });
+          for (const line of text.split("\n")) {
+            if (line.startsWith("data: ") && !line.includes("[DONE]")) {
+              try {
+                const json = JSON.parse(line.slice(6));
+                const delta = json.choices?.[0]?.delta?.content;
+                if (delta) collectedText += delta;
+              } catch { /* ignore malformed chunks */ }
+            }
+          }
+        },
+        flush() {
+          // Stream finished — log trace with full response text (non-blocking)
+          logTrace({
+            turn, timestamp: Date.now(),
+            originalTokens, compressedTokens, compressionRatio,
+            scaledownLatencyMs, groqLatencyMs, totalLatencyMs,
+            model, baselineMode: isBaseline, compressionSuccess,
+            tokenSource: "estimate",
+            responseText: collectedText,
+          }, conversationId).catch(console.error);
+
+          if (process.env.SHADOW_BASELINE === "true" && !isBaseline && compressionSuccess && collectedText) {
+            const latestUserMessage = [...messages].reverse()
+              .find((m: any) => m.role === "user")?.content || "";
+            runShadowAndPatch(collectedText, messages, model, body, conversationId, turn, latestUserMessage).catch(console.error);
+          }
+        },
+      });
+
+      llmResponse.body!.pipeThrough(tapStream);
+      return new NextResponse(tapStream.readable, {
         status: 200,
-        headers: responseHeaders,
+        headers: {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          "Connection": "keep-alive",
+        },
       });
     }
 
@@ -127,6 +261,7 @@ export async function POST(req: NextRequest) {
     // If SHADOW_BASELINE=true and this is a ScaleDown turn, also call Groq
     // with the ORIGINAL uncompressed messages to get a baseline response for comparison
     let shadowResponseText: string | undefined;
+    let qualityScore: number | undefined;
     if (process.env.SHADOW_BASELINE === "true" && !isBaseline && compressionSuccess) {
       try {
         const shadowResponse = await fetch(llmUrl, {
@@ -145,6 +280,21 @@ export async function POST(req: NextRequest) {
         if (shadowResponse.ok) {
           const shadowData = await shadowResponse.json();
           shadowResponseText = shadowData.choices?.[0]?.message?.content || "";
+
+          const latestUserMessage = [...messages]
+            .reverse()
+            .find((message: { role?: string; content?: string }) => message.role === "user")
+            ?.content || "";
+          const qualityResult = await scoreQuality(
+            responseText,
+            shadowResponseText || "",
+            latestUserMessage
+          );
+          if (qualityResult.score >= 0) {
+            qualityScore = qualityResult.score;
+          } else {
+            console.warn("[Shadow baseline] Quality scoring failed:", qualityResult.error);
+          }
         }
       } catch (e) {
         console.warn("[Shadow baseline] Failed:", e);
@@ -152,7 +302,7 @@ export async function POST(req: NextRequest) {
     }
 
     // ---- STEP 5: Log full metrics ----
-    const turn = getAndIncrementTurn();
+    const turn = getAndIncrementTurn(conversationId);
     await logTrace({
       turn,
       timestamp: Date.now(),
@@ -173,6 +323,7 @@ export async function POST(req: NextRequest) {
       tokenSource,
       responseText,
       shadowResponseText,
+      qualityScore,
     }, conversationId);
 
     console.log(

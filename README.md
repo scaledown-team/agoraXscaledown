@@ -47,8 +47,8 @@ ScaleDown sits invisibly between Agora's agent and the LLM. Agora sees it as a s
 
 The dashboard has two tabs:
 
-- **Conversations** — dropdown to select any past conversation, shows 3 metric cards (Tokens Saved, LLM Latency, Accuracy) and a per-turn trace table. Live conversations update in real-time via polling.
-- **Eval Summary** — aggregates all conversations by mode (Baseline vs ScaleDown) with side-by-side comparison of token savings, latency, and compression metrics.
+- **Conversations** — dropdown to select any past conversation, shows 3 metric cards (Tokens Saved, End-to-End Latency, Answer Fidelity) and a per-turn trace table. Live conversations update in real-time via polling.
+- **Eval Summary** — aggregates all conversations by mode (Baseline vs ScaleDown) with side-by-side comparison of token savings, end-to-end latency, and quality-vs-baseline metrics.
 
 ---
 

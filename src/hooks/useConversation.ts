@@ -36,9 +36,27 @@ export function useConversation(preferredMode?: "baseline" | "scaledown") {
   const clientRef = useRef<any>(null);
   const localAudioTrackRef = useRef<any>(null);
   const pendingAudioTracksRef = useRef<any[]>([]);
+  const audioPollerRef = useRef<any>(null);
 
-  const startConversation = useCallback(async () => {
+  const startConversation = useCallback(async (modeOverride?: "baseline" | "scaledown") => {
     setState((prev) => ({ ...prev, status: "connecting", error: null }));
+
+    // Unlock Web Audio context immediately while we still have the user gesture.
+    // Chrome suspends AudioContext until a gesture happens; doing this now ensures
+    // Agora can play audio when the bot's track arrives seconds later.
+    try {
+      const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
+      if (AudioContext) {
+        const ctx = new AudioContext();
+        if (ctx.state === "suspended") await ctx.resume();
+        // Play a silent buffer to fully unlock the context
+        const buf = ctx.createBuffer(1, 1, 22050);
+        const src = ctx.createBufferSource();
+        src.buffer = buf;
+        src.connect(ctx.destination);
+        src.start(0);
+      }
+    } catch (_) { /* ignore — audio unlock is best-effort */ }
 
     try {
       // Step 1: Get token and channel from our API
@@ -61,29 +79,51 @@ export function useConversation(preferredMode?: "baseline" | "scaledown") {
         setState((prev) => ({ ...prev, audioAutoplayFailed: true }));
       };
 
+      // Helper: play a remote audio track with autoplay fallback
+      const playRemoteAudio = (track: any, uid: any) => {
+        try {
+          track.play();
+          console.log(`[Agora] ✅ Audio playing for uid=${uid}`);
+          setState((prev) => ({ ...prev, agentAudioReceived: true, audioAutoplayFailed: false }));
+        } catch (e) {
+          console.warn(`[Agora] ⚠ play() threw for uid=${uid}, storing for manual unlock:`, e);
+          pendingAudioTracksRef.current.push(track);
+          setState((prev) => ({ ...prev, audioAutoplayFailed: true }));
+        }
+      };
+
       // Subscribe to remote audio (the bot's voice)
       client.on("user-published", async (user: any, mediaType: "audio" | "video" | "datachannel") => {
-        console.log(`[user-published] uid=${user.uid} mediaType=${mediaType}`);
+        console.log(`[Agora] user-published uid=${user.uid} mediaType=${mediaType}`);
         try {
           await client.subscribe(user, mediaType);
+          console.log(`[Agora] subscribed to ${mediaType} for uid=${user.uid}`);
         } catch (e) {
-          console.error("[user-published] subscribe() failed:", e);
+          console.error(`[Agora] subscribe(${mediaType}) failed for uid=${user.uid}:`, e);
           return;
         }
         if (mediaType === "audio") {
-          console.log(`[user-published] Playing audio track for uid=${user.uid}`);
-          setState((prev) => ({ ...prev, agentAudioReceived: true }));
           const track = user.audioTrack;
+          console.log(`[Agora] audio track received:`, track ? "present" : "NULL");
           if (track) {
-            try {
-              track.play();
-            } catch (e) {
-              console.warn("[user-published] play() threw, storing for manual unlock:", e);
-              pendingAudioTracksRef.current.push(track);
-              setState((prev) => ({ ...prev, audioAutoplayFailed: true }));
-            }
+            playRemoteAudio(track, user.uid);
+          } else {
+            console.warn(`[Agora] audioTrack is null after subscribe — will retry via poller`);
           }
         }
+      });
+
+      // user-joined fires when ANY user enters the channel (before publishing)
+      client.on("user-joined", (user: any) => {
+        console.log(`[Agora] user-joined uid=${user.uid}`);
+      });
+
+      client.on("user-left", (user: any, reason: string) => {
+        console.log(`[Agora] user-left uid=${user.uid} reason=${reason}`);
+      });
+
+      client.on("connection-state-change", (cur: string, prev: string) => {
+        console.log(`[Agora] connection: ${prev} → ${cur}`);
       });
 
       await client.join(appId, channelName, token, uid);
@@ -97,10 +137,36 @@ export function useConversation(preferredMode?: "baseline" | "scaledown") {
       const joinRes = await fetch("/api/join-conversation", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ channelName, token: botToken, uid, botUid, requestedMode: preferredMode }),
+        body: JSON.stringify({ channelName, token: botToken, uid, botUid, requestedMode: modeOverride ?? preferredMode }),
       });
       if (!joinRes.ok) throw new Error("Failed to start AI agent");
       const { agentId, mode, conversationId } = await joinRes.json();
+
+      // Polling fallback: if user-published missed, manually subscribe to any
+      // remote users that have audio tracks we haven't played yet.
+      audioPollerRef.current = setInterval(() => {
+        const remoteUsers = client.remoteUsers || [];
+        console.log(`[Agora] poller: ${remoteUsers.length} remote user(s)`, remoteUsers.map((u: any) => `uid=${u.uid} hasAudio=${u.hasAudio}`));
+        remoteUsers.forEach(async (user: any) => {
+          if (user.hasAudio && !user.audioTrack) {
+            console.log(`[Agora] poller: subscribing to missed audio for uid=${user.uid}`);
+            try {
+              await client.subscribe(user, "audio");
+              const track = user.audioTrack;
+              if (track) playRemoteAudio(track, user.uid);
+            } catch (e) {
+              console.warn(`[Agora] poller subscribe failed:`, e);
+            }
+          } else if (user.audioTrack) {
+            // Already subscribed — just ensure it's playing
+            const trackState = user.audioTrack.isPlaying;
+            if (!trackState) {
+              console.log(`[Agora] poller: track not playing for uid=${user.uid}, calling play()`);
+              playRemoteAudio(user.audioTrack, user.uid);
+            }
+          }
+        });
+      }, 2000);
 
       setState((prev) => ({
         ...prev,
@@ -149,6 +215,10 @@ export function useConversation(preferredMode?: "baseline" | "scaledown") {
       console.error("Error ending conversation:", error);
     }
 
+    if (audioPollerRef.current) {
+      clearInterval(audioPollerRef.current);
+      audioPollerRef.current = null;
+    }
     pendingAudioTracksRef.current = [];
     setState({
       status: "idle",

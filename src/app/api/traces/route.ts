@@ -39,8 +39,8 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Failed to fetch traces" }, { status: 500 });
   }
 
-  const traces = (rows || []).map((r) => ({
-    turn: r.turn,
+  const traces = (rows || []).map((r, index) => ({
+    turn: index + 1,
     timestamp: new Date(r.created_at).getTime(),
     originalTokens: r.original_tokens,
     compressedTokens: r.compressed_tokens,
@@ -71,9 +71,10 @@ export async function GET(req: NextRequest) {
     avgScaledownLatencyMs: 0,
     avgGroqLatencyMs: 0,
     avgTotalLatencyMs: 0,
-    accuracyRate: 0,
+    successfulCompressionRate: 0,
     totalCostUsd: 0,
     avgQualityScore: null as number | null,
+    qualityCoverage: 0,
     totalGroqPromptTokens: 0,
     totalGroqCompletionTokens: 0,
   } : {
@@ -83,8 +84,7 @@ export async function GET(req: NextRequest) {
     avgScaledownLatencyMs: Math.round(traces.reduce((s, t) => s + t.scaledownLatencyMs, 0) / n),
     avgGroqLatencyMs: Math.round(traces.reduce((s, t) => s + t.groqLatencyMs, 0) / n),
     avgTotalLatencyMs: Math.round(traces.reduce((s, t) => s + t.totalLatencyMs, 0) / n),
-    // Accuracy = % of ScaleDown turns where compression succeeded (not a fallback)
-    accuracyRate: ns > 0
+    successfulCompressionRate: ns > 0
       ? Number((scaledownTurns.filter(t => t.compressionSuccess).length / ns).toFixed(3))
       : 1,
     // Cost: sum of all per-turn costs
@@ -96,6 +96,9 @@ export async function GET(req: NextRequest) {
         ? Number((scored.reduce((s, t) => s + t.qualityScore!, 0) / scored.length).toFixed(3))
         : null;
     })(),
+    qualityCoverage: ns > 0
+      ? Number((traces.filter(t => !t.baselineMode && t.qualityScore != null && t.qualityScore >= 0).length / ns).toFixed(3))
+      : 0,
     // Real token totals from Groq
     totalGroqPromptTokens: traces.reduce((s, t) => s + (t.groqPromptTokens ?? 0), 0),
     totalGroqCompletionTokens: traces.reduce((s, t) => s + (t.groqCompletionTokens ?? 0), 0),
