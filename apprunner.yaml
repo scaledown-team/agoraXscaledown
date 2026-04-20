@@ -16,40 +16,19 @@ run:
   env:
     - name: NODE_ENV
       value: production
-    # --- Agora ---
+    # --- Agora (non-secret) ---
     - name: NEXT_PUBLIC_AGORA_APP_ID
-      value: "2504c2aa783a4d66bdccb873d09e1fc6"
-    - name: AGORA_APP_CERTIFICATE
-      value: "bda976162ef245cb81d3c139f9466f12"
-    - name: AGORA_CUSTOMER_ID
-      value: ""
-    - name: AGORA_CUSTOMER_SECRET
-      value: ""
+      value: "11a55d7677784bc0b23e06a8767ab569"
     - name: NEXT_PUBLIC_AGORA_BOT_UID
       value: "200019674"
-    # --- Deepgram ---
-    - name: DEEPGRAM_API_KEY
-      value: ""
-    # --- Cartesia ---
-    - name: CARTESIA_API_KEY
-      value: ""
-    - name: CARTESIA_VOICE_ID
-      value: ""
-    # --- Groq (LLM) ---
+    # --- Groq (non-secret) ---
     - name: LLM_BASE_URL
       value: "https://api.groq.com/openai/v1"
-    - name: LLM_API_KEY
-      value: ""
     - name: LLM_MODEL
       value: "llama-3.3-70b-versatile"
-    # --- ScaleDown ---
-    - name: SCALEDOWN_API_KEY
-      value: ""
+    # --- ScaleDown (non-secret) ---
     - name: SCALEDOWN_API_URL
       value: "https://api.scaledown.xyz"
-    # --- Proxy (set to your App Runner service URL once deployed) ---
-    - name: PROXY_BASE_URL
-      value: ""
     # --- Feature flags ---
     - name: BASELINE_MODE
       value: "false"
@@ -57,3 +36,27 @@ run:
       value: "false"
     - name: QUALITY_JUDGE_MODEL
       value: "llama-3.1-8b-instant"
+    - name: PROXY_BASE_URL
+      value: https://nq6vxskeui.us-east-1.awsapprunner.com/
+  secrets:
+    # --- Agora ---
+    - name: AGORA_APP_CERTIFICATE
+      value-from: arn:aws:secretsmanager:us-east-1:011542523304:secret:AGORA_APP_CERTIFICATE-1l7fW8
+    - name: AGORA_CUSTOMER_ID
+      value-from: arn:aws:secretsmanager:us-east-1:011542523304:secret:AGORA_CUSTOMER_ID-w4pUgc
+    - name: AGORA_CUSTOMER_SECRET
+      value-from: arn:aws:secretsmanager:us-east-1:011542523304:secret:AGORA_CUSTOMER_SECRET-sg8QXC
+    # --- Deepgram ---
+    - name: DEEPGRAM_API_KEY
+      value-from: arn:aws:secretsmanager:us-east-1:011542523304:secret:DEEPGRAM_API_KEY-38WEGP
+    # --- Cartesia ---
+    - name: CARTESIA_API_KEY
+      value-from: arn:aws:secretsmanager:us-east-1:011542523304:secret:CARTESIA_API_KEY-4Y8YvE
+    - name: CARTESIA_VOICE_ID
+      value-from: arn:aws:secretsmanager:us-east-1:011542523304:secret:CARTESIA_VOICE_ID-7tSStm
+    # --- Groq ---
+    - name: LLM_API_KEY
+      value-from: arn:aws:secretsmanager:us-east-1:011542523304:secret:GROQ_API_KEY-d57Vfe
+    # --- ScaleDown ---
+    - name: SCALEDOWN_API_KEY
+      value-from: arn:aws:secretsmanager:us-east-1:011542523304:secret:SCALEDOWN_API_KEY-pEyNar
