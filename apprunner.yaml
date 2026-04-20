@@ -9,7 +9,7 @@ build:
       - npm run build
 
 run:
-  command: npm run start
+  command: npx next start -H 0.0.0.0
   network:
     port: 3000
     env: PORT
@@ -60,3 +60,10 @@ run:
     # --- ScaleDown ---
     - name: SCALEDOWN_API_KEY
       value-from: arn:aws:secretsmanager:us-east-1:011542523304:secret:SCALEDOWN_API_KEY-pEyNar
+    # --- Supabase ---
+    - name: NEXT_PUBLIC_SUPABASE_URL
+      value-from: arn:aws:secretsmanager:us-east-1:011542523304:secret:NEXT_PUBLIC_SUPABASE_URL-sJKEa0
+    - name: NEXT_PUBLIC_SUPABASE_ANON_KEY
+      value-from: arn:aws:secretsmanager:us-east-1:011542523304:secret:NEXT_PUBLIC_SUPABASE_ANON_KEY-2NNkQT
+    - name: SUPABASE_SERVICE_ROLE_KEY
+      value-from: arn:aws:secretsmanager:us-east-1:011542523304:secret:SUPABASE_SERVICE_ROLE_KEY-NMpIPD
