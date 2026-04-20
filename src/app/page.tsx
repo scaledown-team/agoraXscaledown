@@ -214,6 +214,7 @@ export default function Home() {
   const [selectedEpisodeId, setSelectedEpisodeId] = useState<string | null>(null);
   const [selectedEpisodeTitle, setSelectedEpisodeTitle] = useState<string | null>(null);
   const [podcastTranscript, setPodcastTranscript] = useState<string | null>(null);
+  const [podcastContextSource, setPodcastContextSource] = useState<"transcript" | "description" | null>(null);
   const [loadingTranscript, setLoadingTranscript] = useState(false);
 
   const searchPodcasts = useCallback(async () => {
@@ -241,7 +242,16 @@ export default function Home() {
       const res = await fetch(`/api/podcast/episode?id=${ep.id}`);
       if (res.ok) {
         const data = await res.json();
-        setPodcastTranscript(data.transcript ?? data.description ?? null);
+        if (data.transcript) {
+          setPodcastTranscript(data.transcript);
+          setPodcastContextSource("transcript");
+        } else if (data.description) {
+          setPodcastTranscript(data.description);
+          setPodcastContextSource("description");
+        } else {
+          setPodcastTranscript(null);
+          setPodcastContextSource(null);
+        }
       }
     } catch { } finally {
       setLoadingTranscript(false);
@@ -252,6 +262,7 @@ export default function Home() {
     setSelectedEpisodeId(null);
     setSelectedEpisodeTitle(null);
     setPodcastTranscript(null);
+    setPodcastContextSource(null);
     setPodcastQuery("");
     setPodcastResults([]);
   }, []);
@@ -555,10 +566,14 @@ export default function Home() {
                 <p className="text-xs font-semibold truncate">{selectedEpisodeTitle}</p>
                 {loadingTranscript && <p className={`text-[10px] ${textMuted}`}>Loading transcript...</p>}
                 {!loadingTranscript && podcastTranscript && (
-                  <p className={`text-[10px] ${textMuted}`}>{podcastTranscript.length.toLocaleString()} chars · agent will answer questions about this episode</p>
+                  <p className={`text-[10px] ${textMuted}`}>
+                    {podcastTranscript.length.toLocaleString()} chars ·{" "}
+                    {podcastContextSource === "transcript" ? "full transcript" : "episode description (free plan — no transcript)"}{" "}
+                    · agent will answer questions about this episode
+                  </p>
                 )}
                 {!loadingTranscript && !podcastTranscript && (
-                  <p className="text-[10px] text-yellow-500">No transcript available — description will be used as context</p>
+                  <p className="text-[10px] text-yellow-500">No context available for this episode</p>
                 )}
               </div>
               <button onClick={clearPodcast} className={`shrink-0 px-3 py-1 rounded-lg text-xs font-medium transition-colors ${btnBase}`}>

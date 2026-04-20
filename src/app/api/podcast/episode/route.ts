@@ -14,21 +14,29 @@ export async function GET(req: NextRequest) {
     const response = await client.fetchEpisodeById({ id, show_transcript: 1 });
     const ep = response.data;
 
-    // ListenNotes returns transcript as an array of segments or a plain string
+    // ListenNotes returns transcript as an array of segments or a plain string.
+    // Free plan returns a paywall message string — treat that as no transcript.
     let transcript: string | null = null;
     if (ep.transcript) {
+      let raw: string | null = null;
       if (typeof ep.transcript === "string") {
-        transcript = ep.transcript;
+        raw = ep.transcript;
       } else if (Array.isArray(ep.transcript)) {
-        transcript = ep.transcript.map((s: any) => s.text ?? "").join(" ");
+        raw = ep.transcript.map((s: any) => s.text ?? "").join(" ");
+      }
+      if (raw && !raw.toLowerCase().includes("upgrade") && !raw.toLowerCase().includes("plan to see")) {
+        transcript = raw;
       }
     }
+
+    // Strip HTML tags from description for cleaner context
+    const description = (ep.description ?? "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 
     return NextResponse.json({
       id: ep.id,
       title: ep.title,
       podcast: ep.podcast?.title ?? "",
-      description: ep.description,
+      description,
       transcript,
       audioLengthSec: ep.audio_length_sec,
     });
