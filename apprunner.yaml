@@ -1,0 +1,59 @@
+version: 1.0
+runtime: nodejs18
+
+build:
+  commands:
+    pre-build:
+      - npm ci
+    build:
+      - npm run build
+
+run:
+  command: npm run start
+  network:
+    port: 3000
+    env: PORT
+  env:
+    - name: NODE_ENV
+      value: production
+    # --- Agora ---
+    - name: NEXT_PUBLIC_AGORA_APP_ID
+      value: "2504c2aa783a4d66bdccb873d09e1fc6"
+    - name: AGORA_APP_CERTIFICATE
+      value: "bda976162ef245cb81d3c139f9466f12"
+    - name: AGORA_CUSTOMER_ID
+      value: ""
+    - name: AGORA_CUSTOMER_SECRET
+      value: ""
+    - name: NEXT_PUBLIC_AGORA_BOT_UID
+      value: "200019674"
+    # --- Deepgram ---
+    - name: DEEPGRAM_API_KEY
+      value: ""
+    # --- Cartesia ---
+    - name: CARTESIA_API_KEY
+      value: ""
+    - name: CARTESIA_VOICE_ID
+      value: ""
+    # --- Groq (LLM) ---
+    - name: LLM_BASE_URL
+      value: "https://api.groq.com/openai/v1"
+    - name: LLM_API_KEY
+      value: ""
+    - name: LLM_MODEL
+      value: "llama-3.3-70b-versatile"
+    # --- ScaleDown ---
+    - name: SCALEDOWN_API_KEY
+      value: ""
+    - name: SCALEDOWN_API_URL
+      value: "https://api.scaledown.xyz"
+    # --- Proxy (set to your App Runner service URL once deployed) ---
+    - name: PROXY_BASE_URL
+      value: ""
+    # --- Feature flags ---
+    - name: BASELINE_MODE
+      value: "false"
+    - name: SHADOW_BASELINE
+      value: "false"
+    - name: QUALITY_JUDGE_MODEL
+      value: "llama-3.1-8b-instant"
