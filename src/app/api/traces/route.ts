@@ -59,6 +59,10 @@ export async function GET(req: NextRequest) {
     // Phase 2: quality
     qualityScore: r.quality_score != null ? Number(r.quality_score) : null,
     responseText: r.response_text ?? null,
+    // Phase 3: baseline comparison
+    baselineResponseText: r.baseline_response_text ?? null,
+    baselineLatencyMs: r.baseline_latency_ms ?? null,
+    baselineTokens: r.baseline_tokens ?? null,
   }));
 
   const n = traces.length;

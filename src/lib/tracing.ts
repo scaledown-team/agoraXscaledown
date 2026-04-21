@@ -25,6 +25,11 @@ export interface TraceEvent {
   responseText?: string;
   shadowResponseText?: string;
   qualityScore?: number;
+
+  // Single-bot dual-path (Phase 3)
+  baselineResponseText?: string;
+  baselineLatencyMs?: number;
+  baselineTokens?: number;
 }
 
 /**
@@ -71,6 +76,9 @@ export async function logTrace(event: TraceEvent, conversationId: string): Promi
     response_text: event.responseText ?? null,
     shadow_response_text: event.shadowResponseText ?? null,
     quality_score: event.qualityScore ?? null,
+    baseline_response_text: event.baselineResponseText ?? null,
+    baseline_latency_ms: event.baselineLatencyMs ?? null,
+    baseline_tokens: event.baselineTokens ?? null,
   };
 
   try {

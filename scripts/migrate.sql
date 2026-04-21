@@ -41,3 +41,9 @@ ALTER TABLE trace_events
   ADD COLUMN IF NOT EXISTS response_text text,
   ADD COLUMN IF NOT EXISTS shadow_response_text text,
   ADD COLUMN IF NOT EXISTS quality_score numeric(4,3);
+
+-- Phase 3: Single-bot dual-path — baseline response stored inline per turn
+ALTER TABLE trace_events
+  ADD COLUMN IF NOT EXISTS baseline_response_text text,
+  ADD COLUMN IF NOT EXISTS baseline_latency_ms integer,
+  ADD COLUMN IF NOT EXISTS baseline_tokens integer;

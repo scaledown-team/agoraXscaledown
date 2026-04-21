@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useEffect, useRef } from "react";
-import { useDualConversation } from "@/hooks/useDualConversation";
+import { useConversation } from "@/hooks/useConversation";
 
 interface TraceEvent {
   turn: number;
@@ -15,6 +15,9 @@ interface TraceEvent {
   compressionSuccess: boolean;
   qualityScore?: number | null;
   responseText?: string | null;
+  baselineResponseText?: string | null;
+  baselineLatencyMs?: number | null;
+  baselineTokens?: number | null;
 }
 
 interface Summary {
@@ -46,9 +49,6 @@ interface SavedConversation {
   avgGroqLatencyMs: number;
   avgScaledownLatencyMs: number;
   avgTotalLatencyMs?: number;
-  successfulCompressionRate?: number;
-  avgQualityScore?: number | null;
-  qualityCoverage?: number;
 }
 
 interface EvalModeAgg {
@@ -61,22 +61,13 @@ interface EvalModeAgg {
   avgGroqLatencyMs: number;
   avgScaledownLatencyMs: number;
   avgTotalLatencyMs?: number;
-  avgQualityScore?: number | null;
-  avgRougeScore?: number | null;
-  qualityCoverage?: number;
-  rougeCoverage?: number;
 }
 
 interface EvalData {
   results: any[];
   baseline: EvalModeAgg | null;
   scaledown: EvalModeAgg | null;
-  comparison: {
-    tokenSavingsPct: number;
-    latencyDiffMs: number;
-    groqLatencyDiffMs?: number;
-    scaledownOverheadMs: number;
-  } | null;
+  comparison: { tokenSavingsPct: number; latencyDiffMs: number; scaledownOverheadMs: number } | null;
   summary: {
     totalConversations: number;
     baselineCount: number;
@@ -84,141 +75,29 @@ interface EvalData {
     totalTurns: number;
     totalTokensSaved: number;
     overallCompressionPct: number;
-    avgQualityScore?: number | null;
-    avgRougeScore?: number | null;
-    qualityCoverage?: number;
-    rougeCoverage?: number;
   };
 }
 
 export default function Home() {
-  const [liveBaselineData, setLiveBaselineData] = useState<TraceData | null>(null);
-  const [liveScaledownData, setLiveScaledownData] = useState<TraceData | null>(null);
+  const [liveTraceData, setLiveTraceData] = useState<TraceData | null>(null);
   const [conversations, setConversations] = useState<SavedConversation[]>([]);
-
-  const [selectedBaselineConvId, setSelectedBaselineConvId] = useState<string | null>(null);
-  const [selectedScaledownConvId, setSelectedScaledownConvId] = useState<string | null>(null);
-  const [baselineTraceData, setBaselineTraceData] = useState<TraceData | null>(null);
-  const [scaledownTraceData, setScaledownTraceData] = useState<TraceData | null>(null);
-
+  const [selectedConvId, setSelectedConvId] = useState<string | null>(null);
+  const [selectedTraceData, setSelectedTraceData] = useState<TraceData | null>(null);
   const [evalData, setEvalData] = useState<EvalData | null>(null);
   const [evalRunning, setEvalRunning] = useState(false);
-
-  const lastBaselineIdRef = useRef<string | null>(null);
-  const lastScaledownIdRef = useRef<string | null>(null);
+  const lastConvIdRef = useRef<string | null>(null);
 
   const {
-    status, error,
+    status, error, conversationId,
     audioAutoplayFailed, agentAudioReceived,
-    baselineConversationId, scaledownConversationId,
-    startBoth, endBoth, unlockAudio,
-  } = useDualConversation();
-
-  const runEval = useCallback(async () => {
-    setEvalRunning(true);
-    try {
-      const res = await fetch("/api/eval", { method: "POST" });
-      if (res.ok) setEvalData(await res.json());
-    } catch { } finally {
-      setEvalRunning(false);
-    }
-  }, []);
-
-  const clearHistory = useCallback(async () => {
-    if (!confirm("Delete all conversations and trace data from the database? This cannot be undone.")) return;
-    await fetch("/api/clear-history", { method: "DELETE" });
-    setEvalData(null);
-    setConversations([]);
-    setBaselineTraceData(null);
-    setScaledownTraceData(null);
-    setSelectedBaselineConvId(null);
-    setSelectedScaledownConvId(null);
-  }, []);
-
-  const refreshConversations = useCallback(async () => {
-    try {
-      const res = await fetch("/api/conversations");
-      if (res.ok) {
-        const data = await res.json();
-        setConversations(data.conversations || []);
-      }
-    } catch { }
-  }, []);
-
-  useEffect(() => { refreshConversations(); runEval(); }, []);
-
-  // Track conversation IDs as they become active
-  useEffect(() => { if (baselineConversationId) lastBaselineIdRef.current = baselineConversationId; }, [baselineConversationId]);
-  useEffect(() => { if (scaledownConversationId) lastScaledownIdRef.current = scaledownConversationId; }, [scaledownConversationId]);
-
-  // When session ends, refresh and select the just-ended conversations
-  useEffect(() => {
-    if (status === "idle" && lastBaselineIdRef.current && lastScaledownIdRef.current) {
-      const bId = lastBaselineIdRef.current;
-      const sId = lastScaledownIdRef.current;
-      refreshConversations().then(() => {
-        setSelectedBaselineConvId(bId);
-        setSelectedScaledownConvId(sId);
-      });
-      runEval();
-    }
-  }, [status]);
-
-  const baselineConvs = conversations.filter(c => c.mode === "baseline" && c.turns > 0);
-  const scaledownConvs = conversations.filter(c => c.mode === "scaledown" && c.turns > 0);
-
-  useEffect(() => {
-    if (baselineConvs.length > 0 && !selectedBaselineConvId)
-      setSelectedBaselineConvId(baselineConvs[0].id);
-  }, [baselineConvs.length]);
-
-  useEffect(() => {
-    if (scaledownConvs.length > 0 && !selectedScaledownConvId)
-      setSelectedScaledownConvId(scaledownConvs[0].id);
-  }, [scaledownConvs.length]);
-
-  // Live polling for both conversations simultaneously
-  useEffect(() => {
-    if (status !== "active") return;
-    const poll = async () => {
-      await Promise.all([
-        baselineConversationId && fetch(`/api/traces?conversationId=${baselineConversationId}`)
-          .then(r => r.ok ? r.json() : null).then(d => d && setLiveBaselineData(d)).catch(() => {}),
-        scaledownConversationId && fetch(`/api/traces?conversationId=${scaledownConversationId}`)
-          .then(r => r.ok ? r.json() : null).then(d => d && setLiveScaledownData(d)).catch(() => {}),
-      ]);
-    };
-    poll();
-    const interval = setInterval(poll, 2000);
-    return () => clearInterval(interval);
-  }, [status, baselineConversationId, scaledownConversationId]);
-
-  useEffect(() => {
-    if (!selectedBaselineConvId) { setBaselineTraceData(null); return; }
-    fetch(`/api/traces?conversationId=${selectedBaselineConvId}`)
-      .then(r => r.ok ? r.json() : null).then(d => d && setBaselineTraceData(d)).catch(() => {});
-  }, [selectedBaselineConvId]);
-
-  useEffect(() => {
-    if (!selectedScaledownConvId) { setScaledownTraceData(null); return; }
-    fetch(`/api/traces?conversationId=${selectedScaledownConvId}`)
-      .then(r => r.ok ? r.json() : null).then(d => d && setScaledownTraceData(d)).catch(() => {});
-  }, [selectedScaledownConvId]);
-
-  const isLive = status === "active";
-  const leftData = isLive ? liveBaselineData : baselineTraceData;
-  const rightData = isLive ? liveScaledownData : scaledownTraceData;
+    startConversation, endConversation, unlockAudio,
+  } = useConversation("scaledown");
 
   // ── Podcast state ─────────────────────────────────────────
   interface PodcastResult {
-    id: string;
-    title: string;
-    podcast: string;
-    description: string;
-    thumbnail: string;
-    audioLengthSec: number;
+    id: string; title: string; podcast: string;
+    description: string; thumbnail: string; audioLengthSec: number;
   }
-
   const [podcastQuery, setPodcastQuery] = useState("");
   const [podcastResults, setPodcastResults] = useState<PodcastResult[]>([]);
   const [podcastSearching, setPodcastSearching] = useState(false);
@@ -234,13 +113,8 @@ export default function Home() {
     setPodcastResults([]);
     try {
       const res = await fetch(`/api/podcast/search?q=${encodeURIComponent(podcastQuery)}`);
-      if (res.ok) {
-        const data = await res.json();
-        setPodcastResults(data.results ?? []);
-      }
-    } catch { } finally {
-      setPodcastSearching(false);
-    }
+      if (res.ok) setPodcastResults((await res.json()).results ?? []);
+    } catch { } finally { setPodcastSearching(false); }
   }, [podcastQuery]);
 
   const selectEpisode = useCallback(async (ep: PodcastResult) => {
@@ -253,116 +127,158 @@ export default function Home() {
       const res = await fetch(`/api/podcast/episode?id=${ep.id}`);
       if (res.ok) {
         const data = await res.json();
-        if (data.transcript) {
-          setPodcastTranscript(data.transcript);
-          setPodcastContextSource("transcript");
-        } else if (data.description) {
-          setPodcastTranscript(data.description);
-          setPodcastContextSource("description");
-        } else {
-          setPodcastTranscript(null);
-          setPodcastContextSource(null);
-        }
+        if (data.transcript) { setPodcastTranscript(data.transcript); setPodcastContextSource("transcript"); }
+        else if (data.description) { setPodcastTranscript(data.description); setPodcastContextSource("description"); }
+        else { setPodcastTranscript(null); setPodcastContextSource(null); }
       }
-    } catch { } finally {
-      setLoadingTranscript(false);
-    }
+    } catch { } finally { setLoadingTranscript(false); }
   }, []);
 
   const clearPodcast = useCallback(() => {
-    setSelectedEpisodeId(null);
-    setSelectedEpisodeTitle(null);
-    setPodcastTranscript(null);
-    setPodcastContextSource(null);
-    setPodcastQuery("");
-    setPodcastResults([]);
+    setSelectedEpisodeId(null); setSelectedEpisodeTitle(null);
+    setPodcastTranscript(null); setPodcastContextSource(null);
+    setPodcastQuery(""); setPodcastResults([]);
   }, []);
+
+  // ── Data loading ──────────────────────────────────────────
+  const runEval = useCallback(async () => {
+    setEvalRunning(true);
+    try {
+      const res = await fetch("/api/eval", { method: "POST" });
+      if (res.ok) setEvalData(await res.json());
+    } catch { } finally { setEvalRunning(false); }
+  }, []);
+
+  const clearHistory = useCallback(async () => {
+    if (!confirm("Delete all conversations and trace data? This cannot be undone.")) return;
+    await fetch("/api/clear-history", { method: "DELETE" });
+    setEvalData(null); setConversations([]); setSelectedConvId(null); setSelectedTraceData(null);
+  }, []);
+
+  const refreshConversations = useCallback(async () => {
+    try {
+      const res = await fetch("/api/conversations");
+      if (res.ok) setConversations((await res.json()).conversations || []);
+    } catch { }
+  }, []);
+
+  useEffect(() => { refreshConversations(); runEval(); }, []);
+  useEffect(() => { if (conversationId) lastConvIdRef.current = conversationId; }, [conversationId]);
+
+  useEffect(() => {
+    if (status === "idle" && lastConvIdRef.current) {
+      const endedId = lastConvIdRef.current;
+      refreshConversations().then(() => setSelectedConvId(endedId));
+      runEval();
+    }
+  }, [status]);
+
+  const pastConvs = conversations.filter(c => c.turns > 0);
+  useEffect(() => {
+    if (pastConvs.length > 0 && !selectedConvId) setSelectedConvId(pastConvs[0].id);
+  }, [pastConvs.length]);
+
+  // Live polling
+  useEffect(() => {
+    if (status !== "active" || !conversationId) return;
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/traces?conversationId=${conversationId}`);
+        if (res.ok) setLiveTraceData(await res.json());
+      } catch { }
+    };
+    poll();
+    const interval = setInterval(poll, 2000);
+    return () => clearInterval(interval);
+  }, [status, conversationId]);
+
+  // Load selected conversation
+  useEffect(() => {
+    if (!selectedConvId) { setSelectedTraceData(null); return; }
+    fetch(`/api/traces?conversationId=${selectedConvId}`)
+      .then(r => r.ok ? r.json() : null).then(d => d && setSelectedTraceData(d)).catch(() => {});
+  }, [selectedConvId]);
+
+  const isLive = status === "active";
+  const displayData = isLive ? liveTraceData : selectedTraceData;
 
   const [isDark, setIsDark] = useState(true);
 
   // ── Theme ─────────────────────────────────────────────────
-  const border    = isDark ? "border-gray-800"  : "border-gray-200";
-  const textMuted = isDark ? "text-gray-600"    : "text-gray-400";
-  const textSub   = isDark ? "text-gray-400"    : "text-gray-600";
+  const border      = isDark ? "border-gray-800"  : "border-gray-200";
+  const textMuted   = isDark ? "text-gray-600"    : "text-gray-400";
+  const textSub     = isDark ? "text-gray-400"    : "text-gray-600";
+  const mainBg      = isDark ? "bg-gray-950 text-white"  : "bg-gray-100 text-gray-900";
+  const headerBg    = isDark ? "bg-gray-900/50"          : "bg-white";
+  const headerBorder= isDark ? "border-gray-800/60"      : "border-gray-200";
+  const tableBg     = isDark ? "bg-gray-950"             : "bg-white";
+  const sdColBg     = isDark ? "bg-cyan-950/10"          : "bg-cyan-50/30";
+  const tableHdrBg  = isDark ? "bg-gray-950"             : "bg-gray-50";
+  const tableHover  = isDark ? "hover:bg-gray-900/40"    : "hover:bg-gray-50";
+  const btnBase     = isDark ? "bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white" : "bg-gray-200 hover:bg-gray-300 text-gray-600 hover:text-gray-900";
+  const clearBtn    = isDark ? "bg-gray-800 hover:bg-red-900/60 text-gray-600 hover:text-red-400" : "bg-gray-200 hover:bg-red-100 text-gray-500 hover:text-red-600";
+  const convSelect  = isDark ? `bg-gray-900 border ${border} ${textSub}` : `bg-white border border-gray-200 text-gray-600`;
 
-  const mainBg        = isDark ? "bg-gray-950 text-white"    : "bg-gray-100 text-gray-900";
-  const headerBg      = isDark ? "bg-gray-900/50"            : "bg-white";
-  const headerBorder  = isDark ? "border-gray-800/60"        : "border-gray-200";
-  const panelBg       = isDark ? "bg-gray-950"               : "bg-white";
-  const sdPanelBg     = isDark ? "bg-cyan-950/10"            : "bg-cyan-50/40";
-  const sdBorderCol   = isDark ? "border-cyan-900/50"        : "border-cyan-200";
-  const tableBg       = isDark ? "bg-gray-950"               : "bg-white";
-  const sdTableBg     = isDark ? "bg-[#010c0e]"              : "bg-cyan-50/20";
-  const tableHeaderBg = isDark ? "bg-gray-950"               : "bg-gray-50";
-  const sdTableHdrBg  = isDark ? "bg-[#030d0f]"              : "bg-cyan-50/30";
-  const tableHover    = isDark ? "hover:bg-gray-900/40"      : "hover:bg-gray-50";
-  const sdTableHover  = isDark ? "hover:bg-cyan-950/20"      : "hover:bg-cyan-50/50";
-  const baselineTag   = isDark ? "bg-gray-800 text-gray-400" : "bg-gray-100 text-gray-600 border border-gray-300";
-  const sdTag         = isDark ? "bg-cyan-950 text-cyan-300 border border-cyan-800" : "bg-cyan-50 text-cyan-700 border border-cyan-300";
-  const baselineBar   = isDark ? "bg-gray-600"               : "bg-gray-300";
-  const baselineTotal = isDark ? "text-gray-300"             : "text-gray-800";
-  const baselineSelect= isDark ? `bg-gray-900 border ${border} ${textSub}` : `bg-white border border-gray-200 text-gray-600`;
-  const sdSelectCls   = isDark ? "bg-[#010c0e] border border-cyan-900/50 text-cyan-400" : "bg-white border border-cyan-200 text-cyan-700";
-  const btnBase       = isDark ? "bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white" : "bg-gray-200 hover:bg-gray-300 text-gray-600 hover:text-gray-900";
-  const clearBtn      = isDark ? "bg-gray-800 hover:bg-red-900/60 text-gray-600 hover:text-red-400" : "bg-gray-200 hover:bg-red-100 text-gray-500 hover:text-red-600";
-  const dividerBorder = isDark ? "border-gray-800" : "border-gray-200";
-
-  // ── Per-turn trace table ──────────────────────────────────
-  function renderTable(data: TraceData | null, isBaseline: boolean, isLivePanel: boolean) {
+  // ── Turn table ────────────────────────────────────────────
+  function renderTable(data: TraceData | null) {
     if (!data || data.traces.length === 0) {
       return (
-        <div className="flex-1 flex items-center justify-center">
+        <div className="flex-1 flex items-center justify-center h-full">
           <p className={`text-sm ${textMuted}`}>
-            {isLivePanel ? "Waiting for first turn..." : "No data — select or start a conversation"}
+            {isLive ? "Waiting for first turn..." : "No data — start or select a conversation"}
           </p>
         </div>
       );
     }
 
     return (
-      <div>
-        <table className="w-full text-xs">
-          <thead className={`sticky top-0 border-b ${border} ${isBaseline ? tableHeaderBg : sdTableHdrBg}`}>
-            <tr className="h-8">
-              <th className={`text-left px-3 ${textMuted} font-medium uppercase tracking-wide w-10`}>Turn</th>
-              <th className={`text-left px-3 ${textMuted} font-medium uppercase tracking-wide w-20`}>Tokens</th>
-              {!isBaseline && <th className={`text-left px-3 ${textMuted} font-medium uppercase tracking-wide w-20`}>After SD</th>}
-              {!isBaseline && <th className={`text-left px-3 ${textMuted} font-medium uppercase tracking-wide w-16`}>Saved</th>}
-              <th className={`text-left px-3 ${textMuted} font-medium uppercase tracking-wide w-20`}>Latency</th>
-              <th className={`text-left px-3 ${textMuted} font-medium uppercase tracking-wide`}>Response</th>
+      <table className="w-full text-xs">
+        <thead className={`sticky top-0 border-b ${border} ${tableHdrBg}`}>
+          <tr className="h-8">
+            <th className={`text-left px-3 ${textMuted} font-medium uppercase tracking-wide w-10`}>Turn</th>
+            <th className={`text-left px-3 ${textMuted} font-medium uppercase tracking-wide w-28`}>Baseline</th>
+            <th className={`text-left px-3 text-cyan-600 font-medium uppercase tracking-wide w-28`}>ScaleDown</th>
+            <th className={`text-left px-3 ${textMuted} font-medium uppercase tracking-wide w-14`}>Saved</th>
+            <th className={`text-left px-3 ${textMuted} font-medium uppercase tracking-wide`}>Baseline response</th>
+            <th className={`text-left px-3 text-cyan-600 font-medium uppercase tracking-wide`}>ScaleDown response</th>
+          </tr>
+        </thead>
+        <tbody>
+          {data.traces.map((t) => (
+            <tr key={t.turn} className={`border-b ${border} last:border-0 transition-colors ${tableHover} align-top`}>
+              <td className={`px-3 py-2.5 font-mono ${textMuted}`}>{t.turn}</td>
+              {/* Baseline: latency + tokens */}
+              <td className="px-3 py-2.5">
+                <div className={`font-mono ${textSub}`}>{t.baselineLatencyMs != null ? `${t.baselineLatencyMs}ms` : "—"}</div>
+                <div className={`text-[10px] ${textMuted}`}>{(t.baselineTokens ?? t.originalTokens).toLocaleString()} tok</div>
+              </td>
+              {/* ScaleDown: latency + tokens */}
+              <td className={`px-3 py-2.5 ${sdColBg}`}>
+                <div className="font-mono text-cyan-400">{t.totalLatencyMs > 0 ? `${t.totalLatencyMs}ms` : "—"}</div>
+                <div className="text-[10px] text-cyan-700">
+                  {t.compressionSuccess
+                    ? `${t.compressedTokens.toLocaleString()} tok`
+                    : <span className="text-orange-400">fallback</span>}
+                </div>
+              </td>
+              {/* Compression savings */}
+              <td className="px-3 py-2.5 font-semibold">
+                {t.compressionSuccess
+                  ? <span className="text-cyan-400">{(t.compressionRatio * 100).toFixed(0)}%</span>
+                  : <span className={textMuted}>—</span>}
+              </td>
+              {/* Baseline response text */}
+              <td className="px-3 py-2.5 max-w-xs">
+                <span className={`${textSub} line-clamp-3 leading-relaxed`}>{t.baselineResponseText || "—"}</span>
+              </td>
+              {/* ScaleDown response text */}
+              <td className={`px-3 py-2.5 max-w-xs ${sdColBg}`}>
+                <span className="text-cyan-300 line-clamp-3 leading-relaxed">{t.responseText || "—"}</span>
+              </td>
             </tr>
-          </thead>
-          <tbody>
-            {data.traces.map((t) => (
-              <tr key={`${t.turn}-${t.originalTokens}`}
-                className={`border-b ${border} last:border-0 transition-colors ${isBaseline ? tableHover : sdTableHover}`}>
-                <td className={`px-3 py-2.5 font-mono ${textMuted}`}>{t.turn}</td>
-                <td className={`px-3 py-2.5 font-mono ${textSub}`}>{t.originalTokens.toLocaleString()}</td>
-                {!isBaseline && (
-                  <td className="px-3 py-2.5 font-mono text-cyan-400">
-                    {t.compressionSuccess ? t.compressedTokens.toLocaleString() : <span className={textMuted}>—</span>}
-                  </td>
-                )}
-                {!isBaseline && (
-                  <td className="px-3 py-2.5 font-semibold">
-                    {t.compressionSuccess
-                      ? <span className="text-cyan-400">{(t.compressionRatio * 100).toFixed(0)}%</span>
-                      : <span className="text-orange-400">fallback</span>}
-                  </td>
-                )}
-                <td className={`px-3 py-2.5 font-mono whitespace-nowrap ${t.totalLatencyMs > 0 ? (isBaseline ? "text-gray-300" : "text-cyan-400") : textMuted}`}>
-                  {t.totalLatencyMs > 0 ? `${t.totalLatencyMs}ms` : "—"}
-                </td>
-                <td className={`px-3 py-2.5 max-w-xs`}>
-                  {t.responseText
-                    ? <span className={`${isBaseline ? textSub : "text-cyan-300"} line-clamp-2 leading-relaxed`}>{t.responseText}</span>
-                    : <span className={textMuted}>—</span>}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+          ))}
+        </tbody>
+      </table>
     );
   }
 
@@ -373,7 +289,7 @@ export default function Home() {
       {/* ── TOP HEADER ── */}
       <header className={`shrink-0 border-b ${border} ${headerBg}`}>
 
-        {/* Branding + single Start/End button */}
+        {/* Branding + controls */}
         <div className={`flex items-center justify-between px-6 py-2.5 border-b ${headerBorder}`}>
           <div>
             <h1 className="text-sm font-bold tracking-tight">
@@ -384,7 +300,7 @@ export default function Home() {
           <div className="flex items-center gap-3">
             {evalData && (
               <p className={`text-[10px] ${textMuted}`}>
-                {evalData.summary.baselineCount} baseline · {evalData.summary.scaledownCount} scaledown · {evalData.summary.totalTurns} turns
+                {evalData.summary.totalConversations} conversations · {evalData.summary.totalTurns} turns
               </p>
             )}
             <button onClick={() => setIsDark(d => !d)}
@@ -400,15 +316,14 @@ export default function Home() {
               Clear History
             </button>
 
-            {/* Single start/end button */}
             {status === "idle" ? (
               <button
-                onClick={() => { setLiveBaselineData(null); setLiveScaledownData(null); lastBaselineIdRef.current = null; lastScaledownIdRef.current = null; startBoth(podcastTranscript ?? undefined); }}
+                onClick={() => { setLiveTraceData(null); lastConvIdRef.current = null; startConversation("scaledown", podcastTranscript ?? undefined); }}
                 className="px-5 py-2 bg-cyan-600 hover:bg-cyan-500 rounded-xl text-xs font-bold transition-colors text-white whitespace-nowrap">
                 Start Conversation
               </button>
             ) : status === "active" ? (
-              <button onClick={endBoth}
+              <button onClick={endConversation}
                 className="px-5 py-2 bg-red-700 hover:bg-red-600 rounded-xl text-xs font-bold transition-colors text-white whitespace-nowrap">
                 End Session
               </button>
@@ -421,135 +336,69 @@ export default function Home() {
           </div>
         </div>
 
-        {/* ── Hero comparison: 3 big cards, Accuracy → Tokens → Latency ── */}
-        {evalData && evalData.baseline && evalData.scaledown ? (() => {
-          const b = evalData.baseline;
+        {/* ── Stats bar ── */}
+        {evalData && evalData.scaledown ? (() => {
           const s = evalData.scaledown;
-          const latencyDiff = (s.avgTotalLatencyMs ?? 0) - (b.avgTotalLatencyMs ?? 0);
-          const tokensSaved = b.totalOriginalTokens - s.totalCompressedTokens;
-          const compressionPct = b.totalOriginalTokens > 0
-            ? Number(((tokensSaved / b.totalOriginalTokens) * 100).toFixed(1))
-            : 0;
-          const fidelity = evalData.summary.avgQualityScore ?? evalData.scaledown?.avgQualityScore ?? null;
-          const rouge = evalData.summary.avgRougeScore ?? evalData.scaledown?.avgRougeScore ?? null;
+          const compressionPct = s.compressionPct;
+          const tokensSaved = s.tokensSaved;
+          const sdLatency = s.avgTotalLatencyMs ?? 0;
+          const baseLatency = s.avgGroqLatencyMs ?? 0;
+          const diff = sdLatency - baseLatency;
 
           return (
             <div className="grid grid-cols-3 divide-x divide-gray-800">
-
-              {/* 1 — ACCURACY */}
-              <div className="px-8 py-5 flex flex-col gap-3">
-                <p className={`text-[10px] uppercase tracking-widest ${textMuted}`}>Answer Quality Score</p>
-                <p className={`text-[10px] ${textMuted} -mt-2`}>
-                  How similar are the answers with and without compression? Scored by an LLM judge.
-                </p>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <p className={`text-[10px] uppercase tracking-widest ${textMuted} mb-1`}>Baseline</p>
-                    {evalData.baseline?.avgQualityScore != null ? (
-                      <>
-                        <p className="text-3xl font-black text-gray-300">{(evalData.baseline.avgQualityScore * 100).toFixed(0)}%</p>
-                        <p className={`text-[10px] ${textMuted} mt-0.5`}>vs ScaleDown shadow · LLM-judge</p>
-                      </>
-                    ) : (
-                      <>
-                        <p className="text-3xl font-black text-gray-500">—</p>
-                        <p className={`text-[10px] ${textMuted} mt-0.5`}>run a conversation to see</p>
-                      </>
-                    )}
-                  </div>
-                  <div>
-                    <p className="text-[10px] uppercase tracking-widest text-cyan-900 mb-1">ScaleDown</p>
-                    {fidelity != null ? (
-                      <>
-                        <p className="text-3xl font-black text-cyan-400">{(fidelity * 100).toFixed(0)}%</p>
-                        <p className="text-[10px] text-cyan-700 mt-0.5">LLM-judge · {rouge != null ? `${(rouge * 100).toFixed(0)}% ROUGE-1` : "semantic match"}</p>
-                      </>
-                    ) : (
-                      <>
-                        <p className="text-3xl font-black text-gray-600">—</p>
-                        <p className={`text-[10px] ${textMuted} mt-0.5`}>run a conversation to see</p>
-                      </>
-                    )}
-                  </div>
+              <div className="px-8 py-4 flex flex-col gap-1">
+                <p className={`text-[10px] uppercase tracking-widest ${textMuted}`}>Tokens Saved</p>
+                <div className="flex items-baseline gap-3">
+                  <p className="text-2xl font-black text-cyan-400">{tokensSaved.toLocaleString()}</p>
+                  <p className="text-sm font-bold text-cyan-600">↓ {compressionPct}%</p>
+                </div>
+                <div className="h-2 bg-gray-800 rounded overflow-hidden mt-1">
+                  <div className="h-full bg-cyan-500 rounded" style={{ width: `${100 - compressionPct}%` }} />
                 </div>
               </div>
-
-              {/* 2 — TOKENS */}
-              <div className="px-8 py-5 flex flex-col gap-4">
-                <p className={`text-[10px] uppercase tracking-widest ${textMuted}`}>Tokens Sent to LLM · Same Conversation</p>
-                <div className="space-y-3">
+              <div className="px-8 py-4 flex flex-col gap-1">
+                <p className={`text-[10px] uppercase tracking-widest ${textMuted}`}>Avg Latency per Turn</p>
+                <div className="flex items-baseline gap-4">
                   <div>
-                    <div className="flex justify-between text-xs mb-1">
-                      <span className={textMuted}>Baseline</span>
-                      <span className={textSub}>{b.totalOriginalTokens.toLocaleString()}</span>
-                    </div>
-                    <div className={`h-5 rounded w-full ${baselineBar}`} />
+                    <p className={`text-[10px] ${textMuted}`}>Baseline (+300ms)</p>
+                    <p className={`text-2xl font-black ${textSub}`}>{baseLatency}ms</p>
                   </div>
                   <div>
-                    <div className="flex justify-between text-xs mb-1">
-                      <span className="text-cyan-400 font-semibold">ScaleDown</span>
-                      <span className="text-cyan-400 font-semibold">{s.totalCompressedTokens.toLocaleString()} <span className="text-cyan-700">↓ {compressionPct}%</span></span>
-                    </div>
-                    <div className="h-5 bg-gray-800 rounded overflow-hidden">
-                      <div className="h-full bg-cyan-500 rounded" style={{ width: `${100 - compressionPct}%` }} />
-                    </div>
+                    <p className="text-[10px] text-cyan-700">ScaleDown</p>
+                    <p className="text-2xl font-black text-cyan-400">{sdLatency}ms</p>
                   </div>
+                  <p className={`text-xs self-end mb-1 ${diff <= 0 ? "text-green-400" : textMuted}`}>
+                    {diff > 0 ? `+${diff}ms` : `${diff}ms`}
+                  </p>
                 </div>
-                <p className={`text-[10px] ${textMuted}`}>{tokensSaved.toLocaleString()} tokens never reached the LLM</p>
               </div>
-
-              {/* 3 — LATENCY BREAKDOWN */}
-              <div className="px-8 py-5 flex flex-col gap-3">
-                <p className={`text-[10px] uppercase tracking-widest ${textMuted}`}>Avg Latency · Per Turn</p>
-                <div className="grid grid-cols-2 gap-6">
-                  <div>
-                    <p className={`text-[10px] uppercase tracking-widest ${textMuted} mb-2`}>Baseline</p>
-                    <div className="space-y-1">
-                      <div className="flex justify-between text-xs">
-                        <span className={textMuted}>LLM</span>
-                        <span className={textSub}>{b.avgGroqLatencyMs}ms</span>
-                      </div>
-                      <div className="flex justify-between text-xs">
-                        <span className={textMuted}>+300ms simulated</span>
-                        <span className={textMuted}>—</span>
-                      </div>
-                      <div className={`h-px bg-gray-800 my-1`} />
-                      <div className="flex justify-between">
-                        <span className={`text-xs font-semibold ${textSub}`}>Total</span>
-                        <span className={`text-base font-black ${baselineTotal}`}>{b.avgTotalLatencyMs ?? "—"}ms</span>
-                      </div>
-                    </div>
-                  </div>
-                  <div>
-                    <p className="text-[10px] uppercase tracking-widest text-cyan-900 mb-2">ScaleDown</p>
-                    <div className="space-y-1">
-                      <div className="flex justify-between text-xs">
-                        <span className="text-cyan-900">LLM</span>
-                        <span className="text-cyan-400">{s.avgGroqLatencyMs}ms</span>
-                      </div>
-                      <div className="flex justify-between text-xs">
-                        <span className="text-cyan-900">ScaleDown</span>
-                        <span className="text-cyan-400">{s.avgScaledownLatencyMs}ms</span>
-                      </div>
-                      <div className="h-px bg-cyan-900/30 my-1" />
-                      <div className="flex justify-between">
-                        <span className="text-xs font-semibold text-cyan-900">Total</span>
-                        <span className="text-base font-black text-cyan-400">{s.avgTotalLatencyMs ?? "—"}ms</span>
-                      </div>
-                    </div>
-                  </div>
+              <div className="px-8 py-4 flex flex-col gap-2">
+                <p className={`text-[10px] uppercase tracking-widest ${textMuted}`}>History</p>
+                <div className="flex items-center gap-2">
+                  {pastConvs.length > 0 ? (
+                    <select value={selectedConvId || ""} onChange={e => setSelectedConvId(e.target.value || null)}
+                      className={`text-xs rounded-lg px-2.5 py-1.5 cursor-pointer ${convSelect}`}>
+                      <option value="">Select conversation</option>
+                      {pastConvs.map(c => <option key={c.id} value={c.id}>{c.label} · {c.turns} turns</option>)}
+                    </select>
+                  ) : (
+                    <p className={`text-xs ${textMuted}`}>No conversations yet</p>
+                  )}
+                  {isLive && (
+                    <span className="flex items-center gap-1 text-xs text-green-400">
+                      <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse inline-block" />
+                      {agentAudioReceived ? "Live · audio receiving" : "Live · waiting..."}
+                    </span>
+                  )}
                 </div>
-                <p className={`text-[10px] ${textMuted}`}>
-                  {latencyDiff > 0 ? `+${latencyDiff}ms` : `${latencyDiff}ms`} vs baseline · fewer tokens = faster LLM
-                </p>
               </div>
-
             </div>
           );
         })() : (
-          <div className="px-6 py-4 flex items-center gap-3">
+          <div className="px-6 py-3">
             <p className={`text-xs ${textMuted}`}>
-              {evalRunning ? "Calculating..." : "Start a conversation to see the comparison"}
+              {evalRunning ? "Calculating..." : "Start a conversation to see metrics"}
             </p>
           </div>
         )}
@@ -563,16 +412,12 @@ export default function Home() {
               <div className="flex-1 min-w-0">
                 <p className={`text-[10px] uppercase tracking-widest ${textMuted} mb-0.5`}>Podcast context loaded</p>
                 <p className="text-xs font-semibold truncate">{selectedEpisodeTitle}</p>
-                {loadingTranscript && <p className={`text-[10px] ${textMuted}`}>Transcribing audio via Deepgram... (may take 10–30s)</p>}
+                {loadingTranscript && <p className={`text-[10px] ${textMuted}`}>Transcribing via Deepgram... (10–30s)</p>}
                 {!loadingTranscript && podcastTranscript && (
                   <p className={`text-[10px] ${textMuted}`}>
                     {podcastTranscript.length.toLocaleString()} chars ·{" "}
-                    {podcastContextSource === "transcript" ? "transcript via Deepgram" : "episode description (transcription unavailable)"}{" "}
-                    · agent will answer questions about this episode
+                    {podcastContextSource === "transcript" ? "transcript via Deepgram" : "episode description"}
                   </p>
-                )}
-                {!loadingTranscript && !podcastTranscript && (
-                  <p className="text-[10px] text-yellow-500">No context available for this episode</p>
                 )}
               </div>
               <button onClick={clearPodcast} className={`shrink-0 px-3 py-1 rounded-lg text-xs font-medium transition-colors ${btnBase}`}>
@@ -583,17 +428,12 @@ export default function Home() {
             <div className="flex flex-col gap-2">
               <div className="flex items-center gap-2">
                 <p className={`text-[10px] uppercase tracking-widest ${textMuted} shrink-0`}>Podcast</p>
-                <input
-                  type="text"
-                  value={podcastQuery}
-                  onChange={e => setPodcastQuery(e.target.value)}
+                <input type="text" value={podcastQuery} onChange={e => setPodcastQuery(e.target.value)}
                   onKeyDown={e => e.key === "Enter" && searchPodcasts()}
                   placeholder="Search for a podcast episode to discuss..."
                   className={`flex-1 text-xs rounded-lg px-3 py-1.5 outline-none ${isDark ? "bg-gray-900 border border-gray-800 text-white placeholder-gray-600" : "bg-white border border-gray-200 text-gray-900 placeholder-gray-400"}`}
                 />
-                <button
-                  onClick={searchPodcasts}
-                  disabled={podcastSearching || !podcastQuery.trim()}
+                <button onClick={searchPodcasts} disabled={podcastSearching || !podcastQuery.trim()}
                   className={`shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-40 ${btnBase}`}>
                   {podcastSearching ? "Searching..." : "Search"}
                 </button>
@@ -601,9 +441,7 @@ export default function Home() {
               {podcastResults.length > 0 && (
                 <div className={`rounded-xl border ${border} divide-y ${border} overflow-hidden max-h-48 overflow-y-auto`}>
                   {podcastResults.map(ep => (
-                    <button
-                      key={ep.id}
-                      onClick={() => selectEpisode(ep)}
+                    <button key={ep.id} onClick={() => selectEpisode(ep)}
                       className={`w-full text-left px-3 py-2 transition-colors ${tableHover} flex items-start gap-3`}>
                       {ep.thumbnail && (
                         // eslint-disable-next-line @next/next/no-img-element
@@ -626,131 +464,20 @@ export default function Home() {
       {audioAutoplayFailed && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm">
           <div className="bg-gray-900 border border-yellow-500/50 rounded-2xl px-10 py-8 flex flex-col items-center gap-4 shadow-2xl">
-            <div className="text-4xl">🔊</div>
             <p className="text-white font-bold text-lg">Browser blocked audio</p>
-            <p className="text-gray-400 text-sm text-center max-w-xs">
-              Click below to enable the agent's voice. This is a one-time Chrome autoplay requirement.
-            </p>
             <button onClick={unlockAudio}
-              className="mt-2 px-8 py-3 bg-yellow-500 hover:bg-yellow-400 text-black font-bold rounded-xl text-base transition-colors animate-pulse">
+              className="px-8 py-3 bg-yellow-500 hover:bg-yellow-400 text-black font-bold rounded-xl transition-colors animate-pulse">
               Enable Audio
             </button>
           </div>
         </div>
       )}
 
-      {/* ── MAIN: two-column grid ── */}
-      <div className="flex-1 overflow-hidden grid grid-cols-2" style={{ gridTemplateRows: "auto 1fr" }}>
-
-        {/* ══ LEFT HEADER: BASELINE ══ */}
-        <div className={`border-b border-r-2 ${border} px-5 pt-4 pb-3 ${panelBg}`}>
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <div className="flex items-center gap-2 mb-1">
-                <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full uppercase tracking-widest ${baselineTag}`}>
-                  Baseline
-                </span>
-                {isLive && (
-                  <span className="flex items-center gap-1 text-xs text-green-400">
-                    <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse inline-block" />
-                    Live
-                  </span>
-                )}
-              </div>
-              <p className={`text-[11px] ${textMuted}`}>No compression · direct to LLM · +300ms simulated delay</p>
-              <p className={`text-[10px] ${textMuted} mt-0.5`}>ASR: Deepgram · LLM: OpenAI · TTS: Cartesia</p>
-            </div>
-            <div className="shrink-0 flex flex-col items-end gap-1.5">
-              {isLive && (
-                <p className={`text-[10px] ${agentAudioReceived ? "text-green-400" : "text-yellow-400"}`}>
-                  {agentAudioReceived ? "● audio receiving" : "○ waiting for audio..."}
-                </p>
-              )}
-            </div>
-          </div>
-          {leftData && leftData.traces.length > 0 && (
-            <div className={`mt-3 flex items-center gap-6 text-xs ${textMuted}`}>
-              <span>{leftData.traces.reduce((s, t) => s + t.originalTokens, 0).toLocaleString()} tokens · {leftData.totalTurns} turns</span>
-              <span>avg {leftData.summary.avgTotalLatencyMs > 0 ? `${leftData.summary.avgTotalLatencyMs}ms` : "—"} latency</span>
-            </div>
-          )}
-          {!isLive && (
-            <div className="mt-3 flex items-center gap-2">
-              {baselineConvs.length > 0 ? (
-                <select value={selectedBaselineConvId || ""} onChange={e => setSelectedBaselineConvId(e.target.value || null)}
-                  className={`text-xs rounded-lg px-2.5 py-1.5 cursor-pointer ${baselineSelect}`}>
-                  <option value="">Select conversation</option>
-                  {baselineConvs.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
-                </select>
-              ) : (
-                <p className={`text-xs ${textMuted}`}>No baseline conversations yet</p>
-              )}
-              {leftData && <span className={`text-[10px] ${textMuted} ml-auto`}>{leftData.totalTurns} turns</span>}
-            </div>
-          )}
-        </div>
-
-        {/* ══ RIGHT HEADER: SCALEDOWN ══ */}
-        <div className={`border-b px-5 pt-4 pb-3 ${sdPanelBg} ${sdBorderCol}`}>
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <div className="flex items-center gap-2 mb-1">
-                <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full uppercase tracking-widest ${sdTag}`}>
-                  ScaleDown
-                </span>
-                {isLive && (
-                  <span className="flex items-center gap-1 text-xs text-green-400">
-                    <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse inline-block" />
-                    Live
-                  </span>
-                )}
-              </div>
-              <p className={`text-[11px] text-cyan-700`}>ScaleDown compression → LLM</p>
-              <p className={`text-[10px] text-cyan-900 mt-0.5`}>
-                ASR: Deepgram · <span className="text-cyan-600 font-semibold">Compress: ScaleDown</span> · LLM: OpenAI · TTS: Cartesia
-              </p>
-            </div>
-          </div>
-          {rightData && rightData.traces.length > 0 && (() => {
-            const totalIn = rightData.traces.reduce((s, t) => s + t.originalTokens, 0);
-            const totalOut = rightData.traces.reduce((s, t) => s + t.compressedTokens, 0);
-            const pct = totalIn > 0 ? (((totalIn - totalOut) / totalIn) * 100) | 0 : 0;
-            return (
-              <div className="mt-3 flex items-center gap-6 text-xs text-cyan-900">
-                <span className="text-cyan-400 font-semibold">{pct}% tokens compressed</span>
-                <span>avg {rightData.summary.avgTotalLatencyMs > 0 ? `${rightData.summary.avgTotalLatencyMs}ms` : "—"} latency</span>
-              </div>
-            );
-          })()}
-          {!isLive && (
-            <div className="mt-3 flex items-center gap-2">
-              {scaledownConvs.length > 0 ? (
-                <select value={selectedScaledownConvId || ""} onChange={e => setSelectedScaledownConvId(e.target.value || null)}
-                  className={`text-xs rounded-lg px-2.5 py-1.5 cursor-pointer ${sdSelectCls}`}>
-                  <option value="">Select conversation</option>
-                  {scaledownConvs.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
-                </select>
-              ) : (
-                <p className="text-xs text-cyan-900">No ScaleDown conversations yet</p>
-              )}
-              {rightData && <span className="text-[10px] text-cyan-900 ml-auto">{rightData.totalTurns} turns</span>}
-            </div>
-          )}
-        </div>
-
-        {/* ══ LEFT TABLE ══ */}
-        <div className={`overflow-auto border-r-2 ${dividerBorder} ${tableBg}`}>
-          {renderTable(leftData, true, isLive)}
-        </div>
-
-        {/* ══ RIGHT TABLE ══ */}
-        <div className={`overflow-auto ${sdTableBg}`}>
-          {renderTable(rightData, false, isLive)}
-        </div>
-
+      {/* ── TURN TABLE ── */}
+      <div className={`flex-1 overflow-auto ${tableBg}`}>
+        {renderTable(displayData)}
       </div>
 
-      {/* Global error */}
       {error && (
         <div className="fixed bottom-4 left-4 right-4 max-w-sm p-3 bg-red-900/90 border border-red-700 rounded-xl text-red-300 text-xs z-50">
           {error}
