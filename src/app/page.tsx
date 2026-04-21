@@ -18,78 +18,45 @@ interface TraceEvent {
   baselineResponseText?: string | null;
   baselineLatencyMs?: number | null;
   baselineTokens?: number | null;
-}
-
-interface Summary {
-  avgOriginalTokens: number;
-  avgCompressedTokens: number;
-  avgCompressionRatio: number;
-  avgScaledownLatencyMs: number;
-  avgGroqLatencyMs: number;
-  avgTotalLatencyMs: number;
-  successfulCompressionRate: number;
-  avgQualityScore?: number | null;
-  qualityCoverage?: number;
+  groqPromptTokens?: number | null;
+  groqCompletionTokens?: number | null;
 }
 
 interface TraceData {
   totalTurns: number;
   traces: TraceEvent[];
-  summary: Summary;
+  summary: Record<string, number | null>;
 }
 
-interface SavedConversation {
-  id: string;
-  label: string;
-  mode: "baseline" | "scaledown";
-  createdAt: string;
-  turns: number;
-  totalTokensSaved: number;
-  avgCompressionRatio: number;
-  avgGroqLatencyMs: number;
-  avgScaledownLatencyMs: number;
-  avgTotalLatencyMs?: number;
-}
-
-interface EvalModeAgg {
-  conversations: number;
-  totalTurns: number;
-  totalOriginalTokens: number;
-  totalCompressedTokens: number;
-  tokensSaved: number;
-  compressionPct: number;
-  avgGroqLatencyMs: number;
-  avgScaledownLatencyMs: number;
-  avgTotalLatencyMs?: number;
-}
-
-interface EvalData {
-  results: any[];
-  baseline: EvalModeAgg | null;
-  scaledown: EvalModeAgg | null;
-  comparison: { tokenSavingsPct: number; latencyDiffMs: number; scaledownOverheadMs: number } | null;
-  summary: {
-    totalConversations: number;
-    baselineCount: number;
-    scaledownCount: number;
-    totalTurns: number;
-    totalTokensSaved: number;
-    overallCompressionPct: number;
-  };
+// ROUGE-1 F1 computed locally between two strings
+function rouge1F1(ref: string, hyp: string): number {
+  const tokenize = (s: string) => s.toLowerCase().match(/\b\w+\b/g) ?? [];
+  const refTokens = tokenize(ref);
+  const hypTokens = tokenize(hyp);
+  if (refTokens.length === 0 || hypTokens.length === 0) return 0;
+  const refSet = new Map<string, number>();
+  refTokens.forEach(t => refSet.set(t, (refSet.get(t) ?? 0) + 1));
+  let overlap = 0;
+  const hypCount = new Map<string, number>();
+  hypTokens.forEach(t => hypCount.set(t, (hypCount.get(t) ?? 0) + 1));
+  hypCount.forEach((cnt, tok) => {
+    const refCnt = refSet.get(tok) ?? 0;
+    overlap += Math.min(cnt, refCnt);
+  });
+  const precision = overlap / hypTokens.length;
+  const recall = overlap / refTokens.length;
+  if (precision + recall === 0) return 0;
+  return (2 * precision * recall) / (precision + recall);
 }
 
 export default function Home() {
   const [liveTraceData, setLiveTraceData] = useState<TraceData | null>(null);
-  const [conversations, setConversations] = useState<SavedConversation[]>([]);
-  const [selectedConvId, setSelectedConvId] = useState<string | null>(null);
-  const [selectedTraceData, setSelectedTraceData] = useState<TraceData | null>(null);
-  const [evalData, setEvalData] = useState<EvalData | null>(null);
-  const [evalRunning, setEvalRunning] = useState(false);
   const lastConvIdRef = useRef<string | null>(null);
 
   const {
     status, error, conversationId,
     audioAutoplayFailed, agentAudioReceived,
+    userSpeaking, agentSpeaking,
     startConversation, endConversation, unlockAudio,
   } = useConversation("scaledown");
 
@@ -140,43 +107,7 @@ export default function Home() {
     setPodcastQuery(""); setPodcastResults([]);
   }, []);
 
-  // ── Data loading ──────────────────────────────────────────
-  const runEval = useCallback(async () => {
-    setEvalRunning(true);
-    try {
-      const res = await fetch("/api/eval", { method: "POST" });
-      if (res.ok) setEvalData(await res.json());
-    } catch { } finally { setEvalRunning(false); }
-  }, []);
-
-  const clearHistory = useCallback(async () => {
-    if (!confirm("Delete all conversations and trace data? This cannot be undone.")) return;
-    await fetch("/api/clear-history", { method: "DELETE" });
-    setEvalData(null); setConversations([]); setSelectedConvId(null); setSelectedTraceData(null);
-  }, []);
-
-  const refreshConversations = useCallback(async () => {
-    try {
-      const res = await fetch("/api/conversations");
-      if (res.ok) setConversations((await res.json()).conversations || []);
-    } catch { }
-  }, []);
-
-  useEffect(() => { refreshConversations(); runEval(); }, []);
   useEffect(() => { if (conversationId) lastConvIdRef.current = conversationId; }, [conversationId]);
-
-  useEffect(() => {
-    if (status === "idle" && lastConvIdRef.current) {
-      const endedId = lastConvIdRef.current;
-      refreshConversations().then(() => setSelectedConvId(endedId));
-      runEval();
-    }
-  }, [status]);
-
-  const pastConvs = conversations.filter(c => c.turns > 0);
-  useEffect(() => {
-    if (pastConvs.length > 0 && !selectedConvId) setSelectedConvId(pastConvs[0].id);
-  }, [pastConvs.length]);
 
   // Live polling
   useEffect(() => {
@@ -192,15 +123,7 @@ export default function Home() {
     return () => clearInterval(interval);
   }, [status, conversationId]);
 
-  // Load selected conversation
-  useEffect(() => {
-    if (!selectedConvId) { setSelectedTraceData(null); return; }
-    fetch(`/api/traces?conversationId=${selectedConvId}`)
-      .then(r => r.ok ? r.json() : null).then(d => d && setSelectedTraceData(d)).catch(() => {});
-  }, [selectedConvId]);
-
   const isLive = status === "active";
-  const displayData = isLive ? liveTraceData : selectedTraceData;
 
   const [isDark, setIsDark] = useState(true);
 
@@ -216,16 +139,49 @@ export default function Home() {
   const tableHdrBg  = isDark ? "bg-gray-950"             : "bg-gray-50";
   const tableHover  = isDark ? "hover:bg-gray-900/40"    : "hover:bg-gray-50";
   const btnBase     = isDark ? "bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white" : "bg-gray-200 hover:bg-gray-300 text-gray-600 hover:text-gray-900";
-  const clearBtn    = isDark ? "bg-gray-800 hover:bg-red-900/60 text-gray-600 hover:text-red-400" : "bg-gray-200 hover:bg-red-100 text-gray-500 hover:text-red-600";
-  const convSelect  = isDark ? `bg-gray-900 border ${border} ${textSub}` : `bg-white border border-gray-200 text-gray-600`;
+
+  // ── Computed stats from current session only ──────────────
+  const traces = liveTraceData?.traces ?? [];
+
+  // originalTokens = canonical uncompressed input (from baseline LLM usage.prompt_tokens)
+  const totalOriginalContextTokens = traces.reduce((s, t) => s + (t.baselineTokens ?? t.originalTokens), 0);
+  const totalCompressedContextTokens = traces.reduce((s, t) => s + t.compressedTokens, 0);
+  const tokensSaved = totalOriginalContextTokens - totalCompressedContextTokens;
+  const tokensSavedPct = totalOriginalContextTokens > 0 ? Math.round((tokensSaved / totalOriginalContextTokens) * 100) : 0;
+
+  const bTurns = traces.filter(t => t.baselineLatencyMs != null);
+  const sdTurns = traces.filter(t => t.groqLatencyMs > 0);
+  const avgBaselineLatency = bTurns.length > 0
+    ? Math.round(bTurns.reduce((s, t) => s + (t.baselineLatencyMs ?? 0), 0) / bTurns.length)
+    : 0;
+  // groqLatencyMs = pure LLM call time for SD path (excludes ScaleDown API overhead)
+  const avgSDLatency = sdTurns.length > 0
+    ? Math.round(sdTurns.reduce((s, t) => s + t.groqLatencyMs, 0) / sdTurns.length)
+    : 0;
+  const avgSDOverhead = traces.filter(t => t.scaledownLatencyMs > 0).length > 0
+    ? Math.round(traces.filter(t => t.scaledownLatencyMs > 0).reduce((s, t) => s + t.scaledownLatencyMs, 0) / traces.filter(t => t.scaledownLatencyMs > 0).length)
+    : 0;
+  const latencyDiff = avgSDLatency - avgBaselineLatency;
+
+  const rougeScores = traces
+    .filter(t => t.responseText && t.baselineResponseText)
+    .map(t => rouge1F1(t.baselineResponseText!, t.responseText!));
+  const avgRouge = rougeScores.length > 0
+    ? rougeScores.reduce((s, v) => s + v, 0) / rougeScores.length
+    : null;
+
+  const judgeScores = traces.filter(t => t.qualityScore != null).map(t => t.qualityScore!);
+  const avgJudge = judgeScores.length > 0
+    ? judgeScores.reduce((s, v) => s + v, 0) / judgeScores.length
+    : null;
 
   // ── Turn table ────────────────────────────────────────────
-  function renderTable(data: TraceData | null) {
-    if (!data || data.traces.length === 0) {
+  function renderTable() {
+    if (traces.length === 0) {
       return (
         <div className="flex-1 flex items-center justify-center h-full">
           <p className={`text-sm ${textMuted}`}>
-            {isLive ? "Waiting for first turn..." : "No data — start or select a conversation"}
+            {isLive ? "Waiting for first turn..." : "Start a conversation to see metrics"}
           </p>
         </div>
       );
@@ -238,45 +194,77 @@ export default function Home() {
             <th className={`text-left px-3 ${textMuted} font-medium uppercase tracking-wide w-10`}>Turn</th>
             <th className={`text-left px-3 ${textMuted} font-medium uppercase tracking-wide w-28`}>Baseline</th>
             <th className={`text-left px-3 text-cyan-600 font-medium uppercase tracking-wide w-28`}>ScaleDown</th>
-            <th className={`text-left px-3 ${textMuted} font-medium uppercase tracking-wide w-14`}>Saved</th>
+            <th className={`text-left px-3 ${textMuted} font-medium uppercase tracking-wide w-28`}>Tokens Saved</th>
+            <th className={`text-left px-3 ${textMuted} font-medium uppercase tracking-wide w-16`}>ROUGE-1</th>
+            <th className={`text-left px-3 ${textMuted} font-medium uppercase tracking-wide w-16`}>LLM Judge</th>
             <th className={`text-left px-3 ${textMuted} font-medium uppercase tracking-wide`}>Baseline response</th>
             <th className={`text-left px-3 text-cyan-600 font-medium uppercase tracking-wide`}>ScaleDown response</th>
           </tr>
         </thead>
         <tbody>
-          {data.traces.map((t) => (
-            <tr key={t.turn} className={`border-b ${border} last:border-0 transition-colors ${tableHover} align-top`}>
-              <td className={`px-3 py-2.5 font-mono ${textMuted}`}>{t.turn}</td>
-              {/* Baseline: latency + tokens */}
-              <td className="px-3 py-2.5">
-                <div className={`font-mono ${textSub}`}>{t.baselineLatencyMs != null ? `${t.baselineLatencyMs}ms` : "—"}</div>
-                <div className={`text-[10px] ${textMuted}`}>{(t.baselineTokens ?? t.originalTokens).toLocaleString()} tok</div>
-              </td>
-              {/* ScaleDown: latency + tokens */}
-              <td className={`px-3 py-2.5 ${sdColBg}`}>
-                <div className="font-mono text-cyan-400">{t.totalLatencyMs > 0 ? `${t.totalLatencyMs}ms` : "—"}</div>
-                <div className="text-[10px] text-cyan-700">
-                  {t.compressionSuccess
-                    ? `${t.compressedTokens.toLocaleString()} tok`
-                    : <span className="text-orange-400">fallback</span>}
-                </div>
-              </td>
-              {/* Compression savings */}
-              <td className="px-3 py-2.5 font-semibold">
-                {t.compressionSuccess
-                  ? <span className="text-cyan-400">{(t.compressionRatio * 100).toFixed(0)}%</span>
-                  : <span className={textMuted}>—</span>}
-              </td>
-              {/* Baseline response text */}
-              <td className="px-3 py-2.5 max-w-xs">
-                <span className={`${textSub} line-clamp-3 leading-relaxed`}>{t.baselineResponseText || "—"}</span>
-              </td>
-              {/* ScaleDown response text */}
-              <td className={`px-3 py-2.5 max-w-xs ${sdColBg}`}>
-                <span className="text-cyan-300 line-clamp-3 leading-relaxed">{t.responseText || "—"}</span>
-              </td>
-            </tr>
-          ))}
+          {traces.map((t) => {
+            const rougeScore = (t.responseText && t.baselineResponseText)
+              ? rouge1F1(t.baselineResponseText, t.responseText)
+              : null;
+            return (
+              <tr key={t.turn} className={`border-b ${border} last:border-0 transition-colors ${tableHover} align-top`}>
+                <td className={`px-3 py-2.5 font-mono ${textMuted}`}>{t.turn}</td>
+                {/* Baseline: LLM latency + uncompressed input tokens */}
+                <td className="px-3 py-2.5">
+                  <div className={`font-mono ${textSub}`}>{t.baselineLatencyMs != null ? `${t.baselineLatencyMs}ms` : "—"}</div>
+                  <div className={`font-mono ${textMuted}`}>{(t.baselineTokens ?? t.originalTokens).toLocaleString()} tok</div>
+                </td>
+                {/* ScaleDown: LLM latency + compressed token count */}
+                <td className={`px-3 py-2.5 ${sdColBg}`}>
+                  <div className="font-mono text-cyan-400">
+                    {t.groqLatencyMs > 0 ? `${t.groqLatencyMs}ms` : "—"}
+                  </div>
+                  <div className="font-mono text-cyan-700">
+                    {t.compressionSuccess
+                      ? `${t.compressedTokens.toLocaleString()} tok`
+                      : <span className="text-orange-400">fallback</span>}
+                  </div>
+                </td>
+                {/* Tokens saved */}
+                <td className="px-3 py-2.5">
+                  {t.compressionSuccess ? (() => {
+                    const saved = (t.baselineTokens ?? t.originalTokens) - t.compressedTokens;
+                    const pct = (t.compressionRatio * 100).toFixed(0);
+                    return (
+                      <div>
+                        <div className="font-mono text-cyan-400">{saved.toLocaleString()}</div>
+                        <div className={`font-mono text-cyan-700`}>{pct}%</div>
+                      </div>
+                    );
+                  })() : <span className={textMuted}>—</span>}
+                </td>
+                {/* ROUGE-1 F1 */}
+                <td className="px-3 py-2.5 font-mono">
+                  {rougeScore != null
+                    ? <span className={rougeScore >= 0.7 ? "text-green-400" : rougeScore >= 0.4 ? "text-yellow-400" : "text-orange-400"}>
+                        {rougeScore.toFixed(2)}
+                      </span>
+                    : <span className={textMuted}>—</span>}
+                </td>
+                {/* LLM Judge score */}
+                <td className="px-3 py-2.5 font-mono">
+                  {t.qualityScore != null
+                    ? <span className={t.qualityScore >= 0.7 ? "text-green-400" : t.qualityScore >= 0.4 ? "text-yellow-400" : "text-orange-400"}>
+                        {t.qualityScore.toFixed(2)}
+                      </span>
+                    : <span className={`text-[10px] ${textMuted}`}>…</span>}
+                </td>
+                {/* Baseline response text */}
+                <td className="px-3 py-2.5 max-w-xs">
+                  <span className={`${textSub} line-clamp-3 leading-relaxed`}>{t.baselineResponseText || "—"}</span>
+                </td>
+                {/* ScaleDown response text */}
+                <td className={`px-3 py-2.5 max-w-xs ${sdColBg}`}>
+                  <span className="text-cyan-300 line-clamp-3 leading-relaxed">{t.responseText || "—"}</span>
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     );
@@ -298,28 +286,42 @@ export default function Home() {
             <p className={`text-[10px] ${textMuted}`}>Voice AI · context compression</p>
           </div>
           <div className="flex items-center gap-3">
-            {evalData && (
-              <p className={`text-[10px] ${textMuted}`}>
-                {evalData.summary.totalConversations} conversations · {evalData.summary.totalTurns} turns
-              </p>
+            {isLive && (
+              <div className="flex items-center gap-2">
+                {/* User speaking indicator */}
+                <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${
+                  userSpeaking
+                    ? "bg-blue-500/20 text-blue-300 border border-blue-500/40"
+                    : "bg-gray-800/60 text-gray-600 border border-gray-700/40"
+                }`}>
+                  <span className={`w-1.5 h-1.5 rounded-full inline-block transition-all ${userSpeaking ? "bg-blue-400 animate-pulse" : "bg-gray-600"}`} />
+                  You
+                </div>
+                {/* Agent state indicator */}
+                <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${
+                  agentSpeaking
+                    ? "bg-green-500/20 text-green-300 border border-green-500/40"
+                    : agentAudioReceived
+                    ? "bg-yellow-500/10 text-yellow-600 border border-yellow-700/30"
+                    : "bg-gray-800/60 text-gray-600 border border-gray-700/40"
+                }`}>
+                  <span className={`w-1.5 h-1.5 rounded-full inline-block transition-all ${
+                    agentSpeaking ? "bg-green-400 animate-pulse" : agentAudioReceived ? "bg-yellow-600 animate-pulse" : "bg-gray-600"
+                  }`} />
+                  {agentSpeaking ? "Agent speaking" : agentAudioReceived ? "Processing..." : "Waiting..."}
+                </div>
+              </div>
             )}
             <button onClick={() => setIsDark(d => !d)}
               className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors ${btnBase}`}>
               {isDark ? "☀ Light" : "☾ Dark"}
             </button>
-            <button onClick={runEval} disabled={evalRunning}
-              className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors ${evalRunning ? `opacity-40 ${isDark ? "bg-gray-800 text-gray-500" : "bg-gray-200 text-gray-400"}` : btnBase}`}>
-              {evalRunning ? "..." : "↻ Refresh"}
-            </button>
-            <button onClick={clearHistory} disabled={status !== "idle"}
-              className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors disabled:opacity-30 ${clearBtn}`}>
-              Clear History
-            </button>
 
             {status === "idle" ? (
               <button
                 onClick={() => { setLiveTraceData(null); lastConvIdRef.current = null; startConversation("scaledown", podcastTranscript ?? undefined); }}
-                className="px-5 py-2 bg-cyan-600 hover:bg-cyan-500 rounded-xl text-xs font-bold transition-colors text-white whitespace-nowrap">
+                disabled={loadingTranscript}
+                className="px-5 py-2 bg-cyan-600 hover:bg-cyan-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl text-xs font-bold transition-colors text-white whitespace-nowrap">
                 Start Conversation
               </button>
             ) : status === "active" ? (
@@ -337,76 +339,106 @@ export default function Home() {
         </div>
 
         {/* ── Stats bar ── */}
-        {evalData && evalData.scaledown ? (() => {
-          const s = evalData.scaledown;
-          const compressionPct = s.compressionPct;
-          const tokensSaved = s.tokensSaved;
-          // Use per-turn trace data for latency so baseline_latency_ms is included
-          const tracesForLatency = displayData?.traces ?? [];
-          const sdTurns = tracesForLatency.filter(t => t.totalLatencyMs > 0);
-          const bTurns = tracesForLatency.filter(t => t.baselineLatencyMs != null);
-          const sdLatency = sdTurns.length > 0
-            ? Math.round(sdTurns.reduce((a, t) => a + t.totalLatencyMs, 0) / sdTurns.length)
-            : (s.avgTotalLatencyMs ?? 0);
-          const baseLatency = bTurns.length > 0
-            ? Math.round(bTurns.reduce((a, t) => a + (t.baselineLatencyMs ?? 0), 0) / bTurns.length)
-            : (s.avgGroqLatencyMs ?? 0);
-          const diff = sdLatency - baseLatency;
-
-          return (
-            <div className="grid grid-cols-3 divide-x divide-gray-800">
-              <div className="px-8 py-4 flex flex-col gap-1">
-                <p className={`text-[10px] uppercase tracking-widest ${textMuted}`}>Tokens Saved</p>
-                <div className="flex items-baseline gap-3">
-                  <p className="text-2xl font-black text-cyan-400">{tokensSaved.toLocaleString()}</p>
-                  <p className="text-sm font-bold text-cyan-600">↓ {compressionPct}%</p>
+        {traces.length > 0 ? (
+          <div className="grid grid-cols-3 divide-x divide-gray-800">
+            {/* Tokens */}
+            <div className="px-8 py-4 flex flex-col gap-1">
+              <p className={`text-[10px] uppercase tracking-widest ${textMuted}`}>Context Tokens Compressed</p>
+              <div className="flex items-baseline gap-3">
+                <div>
+                  <p className={`text-[10px] ${textMuted}`}>Original</p>
+                  <p className={`text-xl font-black ${textSub}`}>{totalOriginalContextTokens.toLocaleString()}</p>
                 </div>
-                <div className="h-2 bg-gray-800 rounded overflow-hidden mt-1">
-                  <div className="h-full bg-cyan-500 rounded" style={{ width: `${100 - compressionPct}%` }} />
+                <div>
+                  <p className="text-[10px] text-cyan-700">Compressed</p>
+                  <p className="text-xl font-black text-cyan-400">{totalCompressedContextTokens.toLocaleString()}</p>
                 </div>
+                <p className="text-sm font-bold text-cyan-600 self-end mb-1">↓ {tokensSavedPct}%</p>
               </div>
-              <div className="px-8 py-4 flex flex-col gap-1">
-                <p className={`text-[10px] uppercase tracking-widest ${textMuted}`}>Avg Latency per Turn</p>
-                <div className="flex items-baseline gap-4">
+              <div className="h-1.5 bg-gray-800 rounded overflow-hidden mt-1">
+                <div className="h-full bg-cyan-500 rounded" style={{ width: `${100 - tokensSavedPct}%` }} />
+              </div>
+            </div>
+            {/* Latency */}
+            <div className="px-8 py-4 flex flex-col gap-1">
+              <p className={`text-[10px] uppercase tracking-widest ${textMuted}`}>Avg LLM Latency per Turn</p>
+              <div className="flex items-baseline gap-4">
+                <div>
+                  <p className={`text-[10px] ${textMuted}`}>Baseline</p>
+                  <p className={`text-2xl font-black ${textSub}`}>{avgBaselineLatency > 0 ? `${avgBaselineLatency}ms` : "—"}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] text-cyan-700">ScaleDown LLM</p>
+                  <p className="text-2xl font-black text-cyan-400">{avgSDLatency > 0 ? `${avgSDLatency}ms` : "—"}</p>
+                </div>
+                {avgBaselineLatency > 0 && avgSDLatency > 0 && (
                   <div>
-                    <p className={`text-[10px] ${textMuted}`}>Baseline</p>
-                    <p className={`text-2xl font-black ${textSub}`}>{baseLatency}ms</p>
+                    <p className={`text-[10px] ${latencyDiff <= 0 ? "text-green-700" : textMuted}`}>Latency Saved</p>
+                    <p className={`text-2xl font-black ${latencyDiff <= 0 ? "text-green-400" : textMuted}`}>
+                      {latencyDiff > 0 ? `+${latencyDiff}ms` : `${Math.abs(latencyDiff)}ms`}
+                    </p>
                   </div>
+                )}
+                {avgSDOverhead > 0 && (
                   <div>
-                    <p className="text-[10px] text-cyan-700">ScaleDown</p>
-                    <p className="text-2xl font-black text-cyan-400">{sdLatency}ms</p>
+                    <p className="text-[10px] text-blue-700">SD API</p>
+                    <p className="text-2xl font-black text-blue-400">+{avgSDOverhead}ms</p>
                   </div>
-                  <p className={`text-xs self-end mb-1 ${diff <= 0 ? "text-green-400" : textMuted}`}>
-                    {diff > 0 ? `+${diff}ms` : `${diff}ms`}
+                )}
+              </div>
+            </div>
+            {/* Quality scores — ROUGE + LLM Judge side by side */}
+            <div className="px-8 py-4 flex flex-col gap-1">
+              <p className={`text-[10px] uppercase tracking-widest ${textMuted}`}>Response Quality</p>
+              <div className="flex items-start gap-6 mt-0.5">
+                <div>
+                  <p className={`text-[10px] ${textMuted} mb-0.5`}>ROUGE-1 F1</p>
+                  <div className="flex items-baseline gap-2">
+                    {avgRouge != null ? (
+                      <>
+                        <p className={`text-2xl font-black ${avgRouge >= 0.7 ? "text-green-400" : avgRouge >= 0.4 ? "text-yellow-400" : "text-orange-400"}`}>
+                          {avgRouge.toFixed(2)}
+                        </p>
+                        <p className={`text-xs ${textMuted} self-end mb-1`}>
+                          {avgRouge >= 0.7 ? "high" : avgRouge >= 0.4 ? "mod" : "low"}
+                        </p>
+                      </>
+                    ) : (
+                      <p className={`text-2xl font-black ${textMuted}`}>—</p>
+                    )}
+                  </div>
+                  <p className={`text-[10px] ${textMuted}`}>
+                    {rougeScores.length > 0 ? `${rougeScores.length}/${traces.length} turns` : "lexical overlap"}
+                  </p>
+                </div>
+                <div className={`w-px self-stretch ${isDark ? "bg-gray-800" : "bg-gray-200"}`} />
+                <div>
+                  <p className={`text-[10px] ${textMuted} mb-0.5`}>LLM Judge</p>
+                  <div className="flex items-baseline gap-2">
+                    {avgJudge != null ? (
+                      <>
+                        <p className={`text-2xl font-black ${avgJudge >= 0.7 ? "text-green-400" : avgJudge >= 0.4 ? "text-yellow-400" : "text-orange-400"}`}>
+                          {avgJudge.toFixed(2)}
+                        </p>
+                        <p className={`text-xs ${textMuted} self-end mb-1`}>
+                          {avgJudge >= 0.7 ? "high" : avgJudge >= 0.4 ? "mod" : "low"}
+                        </p>
+                      </>
+                    ) : (
+                      <p className={`text-2xl font-black ${textMuted}`}>…</p>
+                    )}
+                  </div>
+                  <p className={`text-[10px] ${textMuted}`}>
+                    {judgeScores.length > 0 ? `${judgeScores.length}/${traces.length} turns` : "semantic similarity"}
                   </p>
                 </div>
               </div>
-              <div className="px-8 py-4 flex flex-col gap-2">
-                <p className={`text-[10px] uppercase tracking-widest ${textMuted}`}>History</p>
-                <div className="flex items-center gap-2">
-                  {pastConvs.length > 0 ? (
-                    <select value={selectedConvId || ""} onChange={e => setSelectedConvId(e.target.value || null)}
-                      className={`text-xs rounded-lg px-2.5 py-1.5 cursor-pointer ${convSelect}`}>
-                      <option value="">Select conversation</option>
-                      {pastConvs.map(c => <option key={c.id} value={c.id}>{c.label} · {c.turns} turns</option>)}
-                    </select>
-                  ) : (
-                    <p className={`text-xs ${textMuted}`}>No conversations yet</p>
-                  )}
-                  {isLive && (
-                    <span className="flex items-center gap-1 text-xs text-green-400">
-                      <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse inline-block" />
-                      {agentAudioReceived ? "Live · audio receiving" : "Live · waiting..."}
-                    </span>
-                  )}
-                </div>
-              </div>
             </div>
-          );
-        })() : (
+          </div>
+        ) : (
           <div className="px-6 py-3">
             <p className={`text-xs ${textMuted}`}>
-              {evalRunning ? "Calculating..." : "Start a conversation to see metrics"}
+              {status === "connecting" ? "Connecting..." : "Start a conversation to see metrics"}
             </p>
           </div>
         )}
@@ -416,22 +448,35 @@ export default function Home() {
       {status === "idle" && (
         <div className={`shrink-0 border-b ${border} ${headerBg} px-6 py-3`}>
           {selectedEpisodeId ? (
-            <div className="flex items-center gap-3">
-              <div className="flex-1 min-w-0">
-                <p className={`text-[10px] uppercase tracking-widest ${textMuted} mb-0.5`}>Podcast context loaded</p>
-                <p className="text-xs font-semibold truncate">{selectedEpisodeTitle}</p>
-                {loadingTranscript && <p className={`text-[10px] ${textMuted}`}>Transcribing via Deepgram... (10–30s)</p>}
-                {!loadingTranscript && podcastTranscript && (
-                  <p className={`text-[10px] ${textMuted}`}>
-                    {podcastTranscript.length.toLocaleString()} chars ·{" "}
-                    {podcastContextSource === "transcript" ? "transcript via Deepgram" : "episode description"}
-                  </p>
-                )}
+            loadingTranscript ? (
+              <div className="flex items-center gap-4 py-1">
+                <div className="flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-yellow-400 animate-pulse inline-block" />
+                  <span className="w-2 h-2 rounded-full bg-yellow-400 animate-pulse inline-block" style={{ animationDelay: "0.2s" }} />
+                  <span className="w-2 h-2 rounded-full bg-yellow-400 animate-pulse inline-block" style={{ animationDelay: "0.4s" }} />
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-yellow-400">Transcribing podcast via Deepgram…</p>
+                  <p className={`text-[10px] ${textMuted}`}>{selectedEpisodeTitle} · this may take 15–45s · start button will unlock when done</p>
+                </div>
               </div>
-              <button onClick={clearPodcast} className={`shrink-0 px-3 py-1 rounded-lg text-xs font-medium transition-colors ${btnBase}`}>
-                Clear
-              </button>
-            </div>
+            ) : (
+              <div className="flex items-center gap-3">
+                <div className="flex-1 min-w-0">
+                  <p className={`text-[10px] uppercase tracking-widest ${textMuted} mb-0.5`}>Podcast context loaded</p>
+                  <p className="text-xs font-semibold truncate">{selectedEpisodeTitle}</p>
+                  {podcastTranscript && (
+                    <p className={`text-[10px] ${textMuted}`}>
+                      {podcastTranscript.length.toLocaleString()} chars ·{" "}
+                      {podcastContextSource === "transcript" ? "transcript via Deepgram" : "episode description"}
+                    </p>
+                  )}
+                </div>
+                <button onClick={clearPodcast} className={`shrink-0 px-3 py-1 rounded-lg text-xs font-medium transition-colors ${btnBase}`}>
+                  Clear
+                </button>
+              </div>
+            )
           ) : (
             <div className="flex flex-col gap-2">
               <div className="flex items-center gap-2">
@@ -483,7 +528,7 @@ export default function Home() {
 
       {/* ── TURN TABLE ── */}
       <div className={`flex-1 overflow-auto ${tableBg}`}>
-        {renderTable(displayData)}
+        {renderTable()}
       </div>
 
       {error && (

@@ -52,8 +52,7 @@ export async function compressContext(
   const apiKey = process.env.SCALEDOWN_API_KEY;
   const apiUrl = process.env.SCALEDOWN_API_URL || "https://api.scaledown.xyz";
 
-  const fullContext = messages.map((m) => m.content).join("\n");
-  const originalTokens = estimateTokens(fullContext);
+  const originalTokens = estimateTokens(messages.map((m) => m.content).join("\n")); // fallback if ScaleDown doesn't return token counts
 
   // Baseline mode: skip ScaleDown, return raw messages for A/B comparison
   if (options?.baseline) {
@@ -84,6 +83,11 @@ export async function compressContext(
   const systemMessages = messages.filter((m) => m.role === "system");
   const conversationMessages = messages.filter((m) => m.role !== "system");
 
+  // Build full context for ScaleDown: system prompt (incl. podcast transcript) + conversation history
+  const systemContext = systemMessages.map((m) => `system: ${m.content}`).join("\n");
+  const convContext = conversationMessages.map((m) => `${m.role}: ${m.content}`).join("\n");
+  const fullContext = [systemContext, convContext].filter(Boolean).join("\n\n");
+
   const startTime = Date.now();
 
   try {
@@ -94,7 +98,7 @@ export async function compressContext(
         "x-api-key": apiKey,
       },
       body: JSON.stringify({
-        context: conversationMessages.map((m) => `${m.role}: ${m.content}`).join("\n"),
+        context: fullContext,
         prompt: conversationMessages[conversationMessages.length - 1]?.content || "",
         scaledown: { rate: options?.rate || "auto" },
       }),
@@ -137,13 +141,16 @@ export async function compressContext(
       };
     }
 
-    // Build compressed message array
+    // Build compressed message array — replace system + history with compressed context
     const lastUserMessage = conversationMessages.filter((m) => m.role === "user").pop();
     const compressedMessages: Message[] = [
-      ...systemMessages,
+      {
+        role: "system" as const,
+        content: `[Context compressed by ScaleDown]:\n${compressedContent}`,
+      },
       {
         role: "user" as const,
-        content: `[Previous conversation context (compressed)]:\n${compressedContent}\n\n[Current message]:\n${lastUserMessage?.content || ""}`,
+        content: lastUserMessage?.content || "",
       },
     ];
 

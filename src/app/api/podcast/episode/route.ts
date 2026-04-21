@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { Client } = require("podcast-api");
 
-const TRANSCRIPT_CHAR_LIMIT = 12000; // ~3-4 mins of speech — keeps system prompt manageable
+const TRANSCRIPT_CHAR_LIMIT = 20000; // ~5-6 mins of speech
 
 async function transcribeWithDeepgram(audioUrl: string): Promise<string | null> {
   const apiKey = process.env.DEEPGRAM_API_KEY;
