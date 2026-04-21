@@ -5,6 +5,90 @@ import { calculateCost } from "@/lib/pricing";
 
 const LLM_URL = () => `${process.env.LLM_BASE_URL}/chat/completions`;
 
+// Dedup cache: conversationId+lastUserMsg -> timestamp of last logged trace
+// Prevents double-logging when Agora retries or sends duplicate requests
+const recentRequests = new Map<string, number>();
+const DEDUP_WINDOW_MS = 5000;
+
+/**
+ * LLM-as-judge: scores how well the ScaleDown response preserves the meaning
+ * of the baseline response on a 0–1 scale. Runs fire-and-forget after the
+ * agent response is returned, then patches the trace row in Supabase.
+ */
+async function runLLMJudge(
+  baselineResponse: string,
+  scaledownResponse: string,
+  conversationId: string,
+  turn: number,
+): Promise<void> {
+  try {
+    const judgeModel = process.env.LLM_MODEL || "gpt-4o-mini";
+    const prompt = `You are evaluating whether two AI assistant responses convey the same meaning and key information.
+
+Reference response (baseline, uncompressed context):
+"""
+${baselineResponse}
+"""
+
+Candidate response (ScaleDown, compressed context):
+"""
+${scaledownResponse}
+"""
+
+Score how well the candidate preserves the meaning and key facts of the reference.
+Reply with ONLY a decimal number between 0.0 and 1.0:
+- 1.0 = identical meaning, all key facts preserved
+- 0.7-0.9 = mostly correct, minor omissions
+- 0.4-0.6 = partially correct, some key info missing
+- 0.0-0.3 = significantly different or incorrect
+
+Reply with only the number, nothing else.`;
+
+    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.LLM_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: 10,
+        temperature: 0,
+      }),
+    });
+
+    if (!res.ok) {
+      console.error("[LLM Judge] OpenAI error:", res.status, await res.text());
+      return;
+    }
+
+    const data = await res.json();
+    const raw = data.choices?.[0]?.message?.content?.trim() ?? "";
+    const score = parseFloat(raw);
+    if (isNaN(score) || score < 0 || score > 1) return;
+
+    // Patch the quality_score on the trace row via Supabase REST
+    await fetch(
+      `${process.env.NEXT_PUBLIC_SUPABASE_URL}/rest/v1/trace_events?conversation_id=eq.${encodeURIComponent(conversationId)}&turn=eq.${turn}`,
+      {
+        method: "PATCH",
+        headers: {
+          apikey: process.env.SUPABASE_SERVICE_ROLE_KEY!,
+          Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY!}`,
+          "Content-Type": "application/json",
+          Prefer: "return=minimal",
+        },
+        body: JSON.stringify({ quality_score: score }),
+      }
+    );
+
+    console.log(`[LLM Judge] Turn ${turn} score: ${score}`);
+  } catch (err) {
+    console.error("[LLM Judge] error:", err);
+  }
+}
+
 async function callLLM(messages: any[], model: string, body: any, stream: boolean): Promise<Response> {
   return fetch(LLM_URL(), {
     method: "POST",
@@ -33,6 +117,18 @@ export async function POST(req: NextRequest) {
     const stream = body.stream ?? false;
     const conversationId = req.nextUrl.searchParams.get("conversationId") || "unknown";
 
+    // ---- DEDUP: skip trace logging if same request seen within window ----
+    const lastUserMsg = [...messages].reverse().find((m: any) => m.role === "user")?.content ?? "";
+    const dedupKey = `${conversationId}::${lastUserMsg.slice(0, 200)}`;
+    const now = Date.now();
+    const lastSeen = recentRequests.get(dedupKey);
+    const isDuplicate = lastSeen != null && (now - lastSeen) < DEDUP_WINDOW_MS;
+    if (!isDuplicate) recentRequests.set(dedupKey, now);
+    // Clean up old entries
+    for (const [k, ts] of recentRequests) {
+      if (now - ts > DEDUP_WINDOW_MS * 2) recentRequests.delete(k);
+    }
+
     // ---- STEP 1: Compress with ScaleDown ----
     const {
       messages: compressedMessages,
@@ -43,22 +139,26 @@ export async function POST(req: NextRequest) {
       compressionSuccess,
     } = await compressContext(messages, { targetModel: model, baseline: false, conversationId });
 
-    // ---- STEP 2: Fire both LLM calls in parallel ----
-    // ScaleDown path: compressed messages (this is the real response)
-    // Baseline path: original messages + 300ms simulated delay
-    const scaledownStart = Date.now();
-    const baselineStart = Date.now();
+    // ---- STEP 2: Fire ScaleDown LLM call (always) + baseline (only if not duplicate) ----
+    let scaledownLatencyLlm = 0;
+    let baselineLatencyLlm = 0;
 
-    const [scaledownRes, baselineRes] = await Promise.all([
-      callLLM(compressedMessages, model, body, false), // always non-streaming for baseline comparison
-      (async () => {
-        await new Promise(r => setTimeout(r, 300)); // simulate baseline overhead
-        return callLLM(messages, model, body, false);
-      })(),
-    ]);
+    const scaledownResPromise = (async () => {
+      const t = Date.now();
+      const res = await callLLM(compressedMessages, model, body, false);
+      scaledownLatencyLlm = Date.now() - t;
+      return res;
+    })();
 
-    const scaledownLatencyLlm = Date.now() - scaledownStart;
-    const baselineLatencyLlm = Date.now() - baselineStart;
+    const baselineResPromise = isDuplicate ? Promise.resolve(null) : (async () => {
+      await new Promise(r => setTimeout(r, 500)); // simulate baseline processing overhead
+      const t = Date.now();
+      const res = await callLLM(messages, model, body, false);
+      baselineLatencyLlm = (Date.now() - t) + 500; // include the simulated overhead in reported latency
+      return res;
+    })();
+
+    const [scaledownRes, baselineResRaw] = await Promise.all([scaledownResPromise, baselineResPromise]);
 
     if (!scaledownRes.ok) {
       const errorText = await scaledownRes.text();
@@ -66,11 +166,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "LLM request failed", details: errorText }, { status: scaledownRes.status });
     }
 
-    // ---- STEP 3: Parse both responses ----
-    const [scaledownData, baselineData] = await Promise.all([
-      scaledownRes.json(),
-      baselineRes.ok ? baselineRes.json() : Promise.resolve(null),
-    ]);
+    // ---- STEP 3: Parse responses ----
+    const scaledownData = await scaledownRes.json();
+    const baselineRes = baselineResRaw instanceof Response ? baselineResRaw : null;
+    const baselineData = baselineRes?.ok ? await baselineRes.json() : null;
 
     const responseText: string = scaledownData.choices?.[0]?.message?.content || "";
     const baselineResponseText: string = baselineData?.choices?.[0]?.message?.content || "";
@@ -85,41 +184,51 @@ export async function POST(req: NextRequest) {
     const cost = calculateCost(model, promptTokensForCost, completionTokensForCost);
 
     const totalLatencyMs = scaledownLatencyMs + scaledownLatencyLlm;
+    // Use baseline LLM's real token count as canonical "original" — more accurate than ScaleDown's estimate
     const baselineTokens = baselineData?.usage?.prompt_tokens ?? originalTokens;
+    const canonicalOriginalTokens = baselineTokens; // same input, same token count for both paths
 
-    // ---- STEP 4: Log single trace row with both results ----
-    const turn = getAndIncrementTurn(conversationId);
-    await logTrace({
-      turn,
-      timestamp: Date.now(),
-      originalTokens,
-      compressedTokens,
-      compressionRatio,
-      scaledownLatencyMs,
-      groqLatencyMs: scaledownLatencyLlm,
-      totalLatencyMs,
-      model,
-      baselineMode: false,
-      compressionSuccess,
-      groqPromptTokens,
-      groqCompletionTokens,
-      costInputUsd: cost.inputCost,
-      costOutputUsd: cost.outputCost,
-      costTotalUsd: cost.totalCost,
-      tokenSource,
-      responseText,
-      // Baseline comparison fields
-      baselineResponseText,
-      baselineLatencyMs: baselineLatencyLlm,
-      baselineTokens,
-    }, conversationId);
+    // ---- STEP 4: Log trace (skip if duplicate request) ----
+    if (!isDuplicate) {
+      const turn = getAndIncrementTurn(conversationId);
+      await logTrace({
+        turn,
+        timestamp: Date.now(),
+        originalTokens: canonicalOriginalTokens, // real uncompressed input tokens (from baseline LLM)
+        compressedTokens, // ScaleDown's compressed context tokens
+        compressionRatio,
+        scaledownLatencyMs,
+        groqLatencyMs: scaledownLatencyLlm,
+        totalLatencyMs,
+        model,
+        baselineMode: false,
+        compressionSuccess,
+        groqPromptTokens,
+        groqCompletionTokens,
+        costInputUsd: cost.inputCost,
+        costOutputUsd: cost.outputCost,
+        costTotalUsd: cost.totalCost,
+        tokenSource,
+        responseText,
+        baselineResponseText,
+        baselineLatencyMs: baselineLatencyLlm,
+        baselineTokens,
+      }, conversationId);
 
-    console.log(
-      `[LLM Proxy] Turn ${turn} | ` +
-      `SD: ${compressedTokens} tokens ${scaledownLatencyLlm}ms | ` +
-      `Baseline: ${originalTokens} tokens ${baselineLatencyLlm}ms | ` +
-      `Compression: ${(compressionRatio * 100).toFixed(0)}%`
-    );
+      console.log(
+        `[LLM Proxy] Turn ${turn} | ` +
+        `SD: ${groqPromptTokens ?? compressedTokens} tokens ${scaledownLatencyLlm}ms | ` +
+        `Baseline: ${originalTokens} tokens ${baselineLatencyLlm}ms | ` +
+        `Compression: ${(compressionRatio * 100).toFixed(0)}%`
+      );
+
+      // Fire-and-forget LLM judge (doesn't block agent response)
+      if (responseText && baselineResponseText) {
+        runLLMJudge(baselineResponseText, responseText, conversationId, turn);
+      }
+    } else {
+      console.log(`[LLM Proxy] Duplicate request suppressed for conversationId=${conversationId}`);
+    }
 
     // ---- STEP 5: If streaming was requested, stream the ScaleDown response ----
     // Since we already consumed the response as JSON above, reconstruct as SSE or return JSON

@@ -56,7 +56,7 @@ run:
       value-from: arn:aws:secretsmanager:us-east-1:011542523304:secret:CARTESIA_VOICE_ID-7tSStm
     # --- Groq ---
     - name: LLM_API_KEY
-      value-from: arn:aws:secretsmanager:us-east-1:011542523304:secret:GROQ_API_KEY-d57Vfe
+      value-from: arn:aws:secretsmanager:us-east-1:011542523304:secret:OPENAI_API_KEY-sDqMRg
     # --- ScaleDown ---
     - name: SCALEDOWN_API_KEY
       value-from: arn:aws:secretsmanager:us-east-1:011542523304:secret:SCALEDOWN_API_KEY-pEyNar

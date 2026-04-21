@@ -15,6 +15,8 @@ interface ConversationState {
   error: string | null;
   audioAutoplayFailed: boolean;
   agentAudioReceived: boolean;
+  userSpeaking: boolean;
+  agentSpeaking: boolean;
 }
 
 export function useConversation(preferredMode?: "baseline" | "scaledown") {
@@ -31,12 +33,15 @@ export function useConversation(preferredMode?: "baseline" | "scaledown") {
     error: null,
     audioAutoplayFailed: false,
     agentAudioReceived: false,
+    userSpeaking: false,
+    agentSpeaking: false,
   });
 
   const clientRef = useRef<any>(null);
   const localAudioTrackRef = useRef<any>(null);
   const pendingAudioTracksRef = useRef<any[]>([]);
   const audioPollerRef = useRef<any>(null);
+  const volumePollerRef = useRef<any>(null);
 
   const startConversation = useCallback(async (modeOverride?: "baseline" | "scaledown", podcastContext?: string) => {
     setState((prev) => ({ ...prev, status: "connecting", error: null }));
@@ -181,6 +186,19 @@ export function useConversation(preferredMode?: "baseline" | "scaledown") {
         conversationId: conversationId || null,
         error: null,
       }));
+
+      // Poll volume levels to detect user/agent speaking
+      const SPEAK_THRESHOLD = 0.05;
+      volumePollerRef.current = setInterval(() => {
+        const userVol = localAudioTrackRef.current?.getVolumeLevel?.() ?? 0;
+        const agentTrack = (clientRef.current?.remoteUsers ?? []).find((u: any) => u.audioTrack)?.audioTrack;
+        const agentVol = agentTrack?.getVolumeLevel?.() ?? 0;
+        setState((prev) => ({
+          ...prev,
+          userSpeaking: userVol > SPEAK_THRESHOLD,
+          agentSpeaking: agentVol > SPEAK_THRESHOLD,
+        }));
+      }, 200);
     } catch (error: any) {
       console.error("Error starting conversation:", error);
       setState((prev) => ({
@@ -219,6 +237,10 @@ export function useConversation(preferredMode?: "baseline" | "scaledown") {
       clearInterval(audioPollerRef.current);
       audioPollerRef.current = null;
     }
+    if (volumePollerRef.current) {
+      clearInterval(volumePollerRef.current);
+      volumePollerRef.current = null;
+    }
     pendingAudioTracksRef.current = [];
     setState({
       status: "idle",
@@ -233,6 +255,8 @@ export function useConversation(preferredMode?: "baseline" | "scaledown") {
       error: null,
       audioAutoplayFailed: false,
       agentAudioReceived: false,
+      userSpeaking: false,
+      agentSpeaking: false,
     });
   }, [state.agentId]);
 
