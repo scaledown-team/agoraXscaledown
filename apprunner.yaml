@@ -23,9 +23,9 @@ run:
       value: "200019674"
     # --- Groq (non-secret) ---
     - name: LLM_BASE_URL
-      value: "https://api.groq.com/openai/v1"
+      value: "https://api.openai.com/v1"
     - name: LLM_MODEL
-      value: "llama-3.3-70b-versatile"
+      value: "gpt-5.4"
     # --- ScaleDown (non-secret) ---
     - name: SCALEDOWN_API_URL
       value: "https://api.scaledown.xyz"
@@ -67,3 +67,7 @@ run:
       value-from: arn:aws:secretsmanager:us-east-1:011542523304:secret:NEXT_PUBLIC_SUPABASE_ANON_KEY-2NNkQT
     - name: SUPABASE_SERVICE_ROLE_KEY
       value-from: arn:aws:secretsmanager:us-east-1:011542523304:secret:SUPABASE_SERVICE_ROLE_KEY-NMpIPD
+    # --- LISTENNOTES ---
+    - name: LISTENNOTES_API_KEY
+      value-from: arn:aws:secretsmanager:us-east-1:011542523304:secret:LISTENNOTES_API_KEY-cCkyNE
+    
