@@ -38,7 +38,7 @@ export function useConversation(preferredMode?: "baseline" | "scaledown") {
   const pendingAudioTracksRef = useRef<any[]>([]);
   const audioPollerRef = useRef<any>(null);
 
-  const startConversation = useCallback(async (modeOverride?: "baseline" | "scaledown") => {
+  const startConversation = useCallback(async (modeOverride?: "baseline" | "scaledown", podcastContext?: string) => {
     setState((prev) => ({ ...prev, status: "connecting", error: null }));
 
     // Unlock Web Audio context immediately while we still have the user gesture.
@@ -137,7 +137,7 @@ export function useConversation(preferredMode?: "baseline" | "scaledown") {
       const joinRes = await fetch("/api/join-conversation", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ channelName, token: botToken, uid, botUid, requestedMode: modeOverride ?? preferredMode }),
+        body: JSON.stringify({ channelName, token: botToken, uid, botUid, requestedMode: modeOverride ?? preferredMode, podcastContext }),
       });
       if (!joinRes.ok) throw new Error("Failed to start AI agent");
       const { agentId, mode, conversationId } = await joinRes.json();

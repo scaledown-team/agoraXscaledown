@@ -18,53 +18,36 @@ import { getSupabase } from "@/lib/supabase";
  */
 export async function POST(req: NextRequest) {
   try {
-    const { channelName, token, uid, botUid, requestedMode } = await req.json();
+    const { channelName, token, uid, botUid, podcastContext } = await req.json();
 
     const appId = process.env.NEXT_PUBLIC_AGORA_APP_ID;
-    // Allow UI to override BASELINE_MODE env var for live mode switching
-    const isBaseline = requestedMode !== undefined
-      ? requestedMode === "baseline"
-      : process.env.BASELINE_MODE === "true";
-
-    console.log(`[join-conversation] requestedMode=${requestedMode} BASELINE_MODE=${process.env.BASELINE_MODE} isBaseline=${isBaseline}`);
 
     if (!appId) {
-      return NextResponse.json(
-        { error: "Agora App ID not configured" },
-        { status: 500 }
-      );
+      return NextResponse.json({ error: "Agora App ID not configured" }, { status: 500 });
     }
 
     // Reset turn counter for new conversation
     resetTurnCounter();
 
-    // Create a conversation record in Supabase to group trace events
-    const convMode = isBaseline ? "baseline" : "scaledown";
-    const convCounter = Date.now(); // used for label ordering
+    // Single mode: always ScaleDown — proxy runs both paths internally
     const { data: convData, error: convError } = await getSupabase()
       .from("conversations")
-      .insert({ label: `Conversation`, mode: convMode })
+      .insert({ label: `Conversation`, mode: "scaledown" })
       .select("id")
       .single();
 
     if (convError) {
-      console.error("[Supabase] Failed to create conversation:", convError.message, convError.details, convError.hint);
+      console.error("[Supabase] Failed to create conversation:", convError.message);
     } else {
-      console.log("[Supabase] Created conversation:", convData?.id, "mode:", convMode);
+      console.log("[Supabase] Created conversation:", convData?.id);
     }
 
     const conversationId = convData?.id || "unknown";
 
-    // Both modes route through our proxy so token counts are logged for A/B comparison.
-    // Baseline uses ?baseline=true so the proxy skips ScaleDown but still records metrics.
     const proxyBase = getProxyBaseUrl(req);
-    const llmUrl = isBaseline
-      ? `${proxyBase}/api/llm-proxy?baseline=true&conversationId=${conversationId}`
-      : `${proxyBase}/api/llm-proxy?conversationId=${conversationId}`;
-
-    const llmApiKey = "proxy-internal"; // proxy handles Groq auth internally
-
-    const model = process.env.LLM_MODEL || "llama-3.3-70b-versatile";
+    const llmUrl = `${proxyBase}/api/llm-proxy?conversationId=${conversationId}`;
+    const llmApiKey = "proxy-internal";
+    const model = process.env.LLM_MODEL || "gpt-4o-mini";
 
     // Build the request body per Agora's REST API schema
     // Ref: https://docs.agora.io/en/conversational-ai/rest-api/agent/join
@@ -85,8 +68,9 @@ export async function POST(req: NextRequest) {
           system_messages: [
             {
               role: "system",
-              content:
-                "You are a helpful voice AI assistant. Keep responses concise and conversational since this is a real-time voice conversation. Be natural and friendly.",
+              content: podcastContext
+                ? `You are a helpful voice AI assistant. The user wants to discuss a podcast episode. Here is the transcript/context:\n\n${podcastContext}\n\nAnswer questions about this podcast episode. Keep responses concise and conversational since this is a real-time voice conversation. Be natural and friendly.`
+                : "You are a helpful voice AI assistant. Keep responses concise and conversational since this is a real-time voice conversation. Be natural and friendly.",
             },
           ],
           greeting_message: "Hello! How can I help you today?",
@@ -160,7 +144,7 @@ export async function POST(req: NextRequest) {
       agentId: data.agent_id,
       createTs: data.create_ts,
       status: data.status,
-      mode: isBaseline ? "baseline" : "scaledown",
+      mode: "scaledown",
       conversationId,
     });
   } catch (error) {

@@ -58,6 +58,11 @@ export async function GET(req: NextRequest) {
     tokenSource: r.token_source ?? "estimate",
     // Phase 2: quality
     qualityScore: r.quality_score != null ? Number(r.quality_score) : null,
+    responseText: r.response_text ?? null,
+    // Phase 3: baseline comparison
+    baselineResponseText: r.baseline_response_text ?? null,
+    baselineLatencyMs: r.baseline_latency_ms ?? null,
+    baselineTokens: r.baseline_tokens ?? null,
   }));
 
   const n = traces.length;
@@ -71,6 +76,7 @@ export async function GET(req: NextRequest) {
     avgScaledownLatencyMs: 0,
     avgGroqLatencyMs: 0,
     avgTotalLatencyMs: 0,
+    avgBaselineLatencyMs: 0,
     successfulCompressionRate: 0,
     totalCostUsd: 0,
     avgQualityScore: null as number | null,
@@ -84,6 +90,12 @@ export async function GET(req: NextRequest) {
     avgScaledownLatencyMs: Math.round(traces.reduce((s, t) => s + t.scaledownLatencyMs, 0) / n),
     avgGroqLatencyMs: Math.round(traces.reduce((s, t) => s + t.groqLatencyMs, 0) / n),
     avgTotalLatencyMs: Math.round(traces.reduce((s, t) => s + t.totalLatencyMs, 0) / n),
+    avgBaselineLatencyMs: (() => {
+      const withBaseline = traces.filter(t => t.baselineLatencyMs != null);
+      return withBaseline.length > 0
+        ? Math.round(withBaseline.reduce((s, t) => s + (t.baselineLatencyMs ?? 0), 0) / withBaseline.length)
+        : 0;
+    })(),
     successfulCompressionRate: ns > 0
       ? Number((scaledownTurns.filter(t => t.compressionSuccess).length / ns).toFixed(3))
       : 1,
