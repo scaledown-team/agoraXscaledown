@@ -58,6 +58,7 @@ export async function GET(req: NextRequest) {
     tokenSource: r.token_source ?? "estimate",
     // Phase 2: quality
     qualityScore: r.quality_score != null ? Number(r.quality_score) : null,
+    responseText: r.response_text ?? null,
   }));
 
   const n = traces.length;

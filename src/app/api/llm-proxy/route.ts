@@ -137,11 +137,14 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const messages = body.messages || [];
-    const model = body.model || process.env.LLM_MODEL || "llama-3.3-70b-versatile";
+    const model = body.model || process.env.LLM_MODEL || "gpt-4o-mini";
     const stream = body.stream ?? false;
 
     const isBaseline = req.nextUrl.searchParams.get("baseline") === "true";
     const conversationId = req.nextUrl.searchParams.get("conversationId") || "unknown";
+
+    // 300ms artificial delay on baseline to simulate real-world without compression
+    if (isBaseline) await new Promise(r => setTimeout(r, 300));
 
     // ---- STEP 1: Compress with ScaleDown (or pass-through in baseline) ----
     const {

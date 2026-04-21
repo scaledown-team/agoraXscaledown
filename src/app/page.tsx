@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useEffect, useRef } from "react";
-import { useConversation } from "@/hooks/useConversation";
+import { useDualConversation } from "@/hooks/useDualConversation";
 
 interface TraceEvent {
   turn: number;
@@ -14,6 +14,7 @@ interface TraceEvent {
   baselineMode: boolean;
   compressionSuccess: boolean;
   qualityScore?: number | null;
+  responseText?: string | null;
 }
 
 interface Summary {
@@ -91,8 +92,8 @@ interface EvalData {
 }
 
 export default function Home() {
-  const [preferredMode, setPreferredMode] = useState<"baseline" | "scaledown">("baseline");
-  const [liveTraceData, setLiveTraceData] = useState<TraceData | null>(null);
+  const [liveBaselineData, setLiveBaselineData] = useState<TraceData | null>(null);
+  const [liveScaledownData, setLiveScaledownData] = useState<TraceData | null>(null);
   const [conversations, setConversations] = useState<SavedConversation[]>([]);
 
   const [selectedBaselineConvId, setSelectedBaselineConvId] = useState<string | null>(null);
@@ -103,14 +104,15 @@ export default function Home() {
   const [evalData, setEvalData] = useState<EvalData | null>(null);
   const [evalRunning, setEvalRunning] = useState(false);
 
-  const lastConversationIdRef = useRef<string | null>(null);
-  const lastModeRef = useRef<"baseline" | "scaledown">("baseline");
+  const lastBaselineIdRef = useRef<string | null>(null);
+  const lastScaledownIdRef = useRef<string | null>(null);
 
   const {
-    status, mode, error, conversationId,
+    status, error,
     audioAutoplayFailed, agentAudioReceived,
-    startConversation, endConversation, unlockAudio,
-  } = useConversation(preferredMode);
+    baselineConversationId, scaledownConversationId,
+    startBoth, endBoth, unlockAudio,
+  } = useDualConversation();
 
   const runEval = useCallback(async () => {
     setEvalRunning(true);
@@ -145,16 +147,18 @@ export default function Home() {
 
   useEffect(() => { refreshConversations(); runEval(); }, []);
 
-  useEffect(() => { if (status === "active") lastModeRef.current = mode; }, [status, mode]);
-  useEffect(() => { if (conversationId) lastConversationIdRef.current = conversationId; }, [conversationId]);
+  // Track conversation IDs as they become active
+  useEffect(() => { if (baselineConversationId) lastBaselineIdRef.current = baselineConversationId; }, [baselineConversationId]);
+  useEffect(() => { if (scaledownConversationId) lastScaledownIdRef.current = scaledownConversationId; }, [scaledownConversationId]);
 
+  // When session ends, refresh and select the just-ended conversations
   useEffect(() => {
-    if (status === "idle" && lastConversationIdRef.current) {
-      const endedId = lastConversationIdRef.current;
-      const endedMode = lastModeRef.current;
+    if (status === "idle" && lastBaselineIdRef.current && lastScaledownIdRef.current) {
+      const bId = lastBaselineIdRef.current;
+      const sId = lastScaledownIdRef.current;
       refreshConversations().then(() => {
-        if (endedMode === "baseline") setSelectedBaselineConvId(endedId);
-        else setSelectedScaledownConvId(endedId);
+        setSelectedBaselineConvId(bId);
+        setSelectedScaledownConvId(sId);
       });
       runEval();
     }
@@ -173,51 +177,108 @@ export default function Home() {
       setSelectedScaledownConvId(scaledownConvs[0].id);
   }, [scaledownConvs.length]);
 
+  // Live polling for both conversations simultaneously
   useEffect(() => {
-    if (status !== "active" || !conversationId) return;
+    if (status !== "active") return;
     const poll = async () => {
-      try {
-        const res = await fetch(`/api/traces?conversationId=${conversationId}`);
-        if (res.ok) setLiveTraceData(await res.json());
-      } catch { }
+      await Promise.all([
+        baselineConversationId && fetch(`/api/traces?conversationId=${baselineConversationId}`)
+          .then(r => r.ok ? r.json() : null).then(d => d && setLiveBaselineData(d)).catch(() => {}),
+        scaledownConversationId && fetch(`/api/traces?conversationId=${scaledownConversationId}`)
+          .then(r => r.ok ? r.json() : null).then(d => d && setLiveScaledownData(d)).catch(() => {}),
+      ]);
     };
     poll();
     const interval = setInterval(poll, 2000);
     return () => clearInterval(interval);
-  }, [status, conversationId]);
+  }, [status, baselineConversationId, scaledownConversationId]);
 
   useEffect(() => {
     if (!selectedBaselineConvId) { setBaselineTraceData(null); return; }
     fetch(`/api/traces?conversationId=${selectedBaselineConvId}`)
-      .then(r => r.ok ? r.json() : null).then(d => d && setBaselineTraceData(d)).catch(() => { });
+      .then(r => r.ok ? r.json() : null).then(d => d && setBaselineTraceData(d)).catch(() => {});
   }, [selectedBaselineConvId]);
 
   useEffect(() => {
     if (!selectedScaledownConvId) { setScaledownTraceData(null); return; }
     fetch(`/api/traces?conversationId=${selectedScaledownConvId}`)
-      .then(r => r.ok ? r.json() : null).then(d => d && setScaledownTraceData(d)).catch(() => { });
+      .then(r => r.ok ? r.json() : null).then(d => d && setScaledownTraceData(d)).catch(() => {});
   }, [selectedScaledownConvId]);
 
-  const startBaseline = useCallback(() => {
-    setLiveTraceData(null);
-    lastConversationIdRef.current = null;
-    setPreferredMode("baseline");
-    startConversation("baseline");
-  }, [startConversation]);
+  const isLive = status === "active";
+  const leftData = isLive ? liveBaselineData : baselineTraceData;
+  const rightData = isLive ? liveScaledownData : scaledownTraceData;
 
-  const startScaledown = useCallback(() => {
-    setLiveTraceData(null);
-    lastConversationIdRef.current = null;
-    setPreferredMode("scaledown");
-    startConversation("scaledown");
-  }, [startConversation]);
+  // ── Podcast state ─────────────────────────────────────────
+  interface PodcastResult {
+    id: string;
+    title: string;
+    podcast: string;
+    description: string;
+    thumbnail: string;
+    audioLengthSec: number;
+  }
+
+  const [podcastQuery, setPodcastQuery] = useState("");
+  const [podcastResults, setPodcastResults] = useState<PodcastResult[]>([]);
+  const [podcastSearching, setPodcastSearching] = useState(false);
+  const [selectedEpisodeId, setSelectedEpisodeId] = useState<string | null>(null);
+  const [selectedEpisodeTitle, setSelectedEpisodeTitle] = useState<string | null>(null);
+  const [podcastTranscript, setPodcastTranscript] = useState<string | null>(null);
+  const [podcastContextSource, setPodcastContextSource] = useState<"transcript" | "description" | null>(null);
+  const [loadingTranscript, setLoadingTranscript] = useState(false);
+
+  const searchPodcasts = useCallback(async () => {
+    if (!podcastQuery.trim()) return;
+    setPodcastSearching(true);
+    setPodcastResults([]);
+    try {
+      const res = await fetch(`/api/podcast/search?q=${encodeURIComponent(podcastQuery)}`);
+      if (res.ok) {
+        const data = await res.json();
+        setPodcastResults(data.results ?? []);
+      }
+    } catch { } finally {
+      setPodcastSearching(false);
+    }
+  }, [podcastQuery]);
+
+  const selectEpisode = useCallback(async (ep: PodcastResult) => {
+    setSelectedEpisodeId(ep.id);
+    setSelectedEpisodeTitle(ep.title);
+    setPodcastTranscript(null);
+    setLoadingTranscript(true);
+    setPodcastResults([]);
+    try {
+      const res = await fetch(`/api/podcast/episode?id=${ep.id}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.transcript) {
+          setPodcastTranscript(data.transcript);
+          setPodcastContextSource("transcript");
+        } else if (data.description) {
+          setPodcastTranscript(data.description);
+          setPodcastContextSource("description");
+        } else {
+          setPodcastTranscript(null);
+          setPodcastContextSource(null);
+        }
+      }
+    } catch { } finally {
+      setLoadingTranscript(false);
+    }
+  }, []);
+
+  const clearPodcast = useCallback(() => {
+    setSelectedEpisodeId(null);
+    setSelectedEpisodeTitle(null);
+    setPodcastTranscript(null);
+    setPodcastContextSource(null);
+    setPodcastQuery("");
+    setPodcastResults([]);
+  }, []);
 
   const [isDark, setIsDark] = useState(true);
-
-  const isLiveBaseline = status === "active" && mode === "baseline";
-  const isLiveScaledown = status === "active" && mode === "scaledown";
-  const leftData = isLiveBaseline ? liveTraceData : baselineTraceData;
-  const rightData = isLiveScaledown ? liveTraceData : scaledownTraceData;
 
   // ── Theme ─────────────────────────────────────────────────
   const border    = isDark ? "border-gray-800"  : "border-gray-200";
@@ -244,18 +305,15 @@ export default function Home() {
   const sdSelectCls   = isDark ? "bg-[#010c0e] border border-cyan-900/50 text-cyan-400" : "bg-white border border-cyan-200 text-cyan-700";
   const btnBase       = isDark ? "bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white" : "bg-gray-200 hover:bg-gray-300 text-gray-600 hover:text-gray-900";
   const clearBtn      = isDark ? "bg-gray-800 hover:bg-red-900/60 text-gray-600 hover:text-red-400" : "bg-gray-200 hover:bg-red-100 text-gray-500 hover:text-red-600";
-  const baselineBtn   = isDark ? "bg-gray-700 hover:bg-gray-600 text-white" : "bg-gray-700 hover:bg-gray-600 text-white";
-  const baselineBtnDis= isDark ? "bg-gray-800 text-gray-500" : "bg-gray-200 text-gray-400";
-  const sdBtnDis      = isDark ? "bg-cyan-950 text-cyan-600" : "bg-cyan-100 text-cyan-400";
   const dividerBorder = isDark ? "border-gray-800" : "border-gray-200";
 
   // ── Per-turn trace table ──────────────────────────────────
-  function renderTable(data: TraceData | null, isBaseline: boolean, isLive: boolean) {
+  function renderTable(data: TraceData | null, isBaseline: boolean, isLivePanel: boolean) {
     if (!data || data.traces.length === 0) {
       return (
         <div className="flex-1 flex items-center justify-center">
           <p className={`text-sm ${textMuted}`}>
-            {isLive ? "Waiting for first turn..." : "No data — select or start a conversation"}
+            {isLivePanel ? "Waiting for first turn..." : "No data — select or start a conversation"}
           </p>
         </div>
       );
@@ -266,12 +324,12 @@ export default function Home() {
         <table className="w-full text-xs">
           <thead className={`sticky top-0 border-b ${border} ${isBaseline ? tableHeaderBg : sdTableHdrBg}`}>
             <tr className="h-8">
-              <th className={`text-left px-3 ${textMuted} font-medium uppercase tracking-wide`}>Turn</th>
-              <th className={`text-left px-3 ${textMuted} font-medium uppercase tracking-wide`}>Tokens In</th>
-              {!isBaseline && <th className={`text-left px-3 ${textMuted} font-medium uppercase tracking-wide`}>After SD</th>}
-              {!isBaseline && <th className={`text-left px-3 ${textMuted} font-medium uppercase tracking-wide`}>Saved</th>}
-              <th className={`text-left px-3 ${textMuted} font-medium uppercase tracking-wide`}>Latency</th>
-              <th className={`text-left px-3 ${textMuted} font-medium uppercase tracking-wide`}>{isBaseline ? "Status" : "Fidelity"}</th>
+              <th className={`text-left px-3 ${textMuted} font-medium uppercase tracking-wide w-10`}>Turn</th>
+              <th className={`text-left px-3 ${textMuted} font-medium uppercase tracking-wide w-20`}>Tokens</th>
+              {!isBaseline && <th className={`text-left px-3 ${textMuted} font-medium uppercase tracking-wide w-20`}>After SD</th>}
+              {!isBaseline && <th className={`text-left px-3 ${textMuted} font-medium uppercase tracking-wide w-16`}>Saved</th>}
+              <th className={`text-left px-3 ${textMuted} font-medium uppercase tracking-wide w-20`}>Latency</th>
+              <th className={`text-left px-3 ${textMuted} font-medium uppercase tracking-wide`}>Response</th>
             </tr>
           </thead>
           <tbody>
@@ -292,17 +350,13 @@ export default function Home() {
                       : <span className="text-orange-400">fallback</span>}
                   </td>
                 )}
-                <td className={`px-3 py-2.5 font-mono ${t.totalLatencyMs > 0 ? (isBaseline ? "text-gray-300" : "text-cyan-400") : textMuted}`}>
+                <td className={`px-3 py-2.5 font-mono whitespace-nowrap ${t.totalLatencyMs > 0 ? (isBaseline ? "text-gray-300" : "text-cyan-400") : textMuted}`}>
                   {t.totalLatencyMs > 0 ? `${t.totalLatencyMs}ms` : "—"}
                 </td>
-                <td className="px-3 py-2.5">
-                  {isBaseline
-                    ? <span className={textMuted}>reference</span>
-                    : t.qualityScore != null && t.qualityScore >= 0
-                      ? <span className="text-cyan-400 font-semibold">{(t.qualityScore * 100).toFixed(0)}%</span>
-                      : t.compressionSuccess
-                        ? <span className="text-cyan-500">compressed</span>
-                        : <span className="text-orange-400">fallback</span>}
+                <td className={`px-3 py-2.5 max-w-xs`}>
+                  {t.responseText
+                    ? <span className={`${isBaseline ? textSub : "text-cyan-300"} line-clamp-2 leading-relaxed`}>{t.responseText}</span>
+                    : <span className={textMuted}>—</span>}
                 </td>
               </tr>
             ))}
@@ -319,7 +373,7 @@ export default function Home() {
       {/* ── TOP HEADER ── */}
       <header className={`shrink-0 border-b ${border} ${headerBg}`}>
 
-        {/* Branding row */}
+        {/* Branding + single Start/End button */}
         <div className={`flex items-center justify-between px-6 py-2.5 border-b ${headerBorder}`}>
           <div>
             <h1 className="text-sm font-bold tracking-tight">
@@ -345,6 +399,25 @@ export default function Home() {
               className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors disabled:opacity-30 ${clearBtn}`}>
               Clear History
             </button>
+
+            {/* Single start/end button */}
+            {status === "idle" ? (
+              <button
+                onClick={() => { setLiveBaselineData(null); setLiveScaledownData(null); lastBaselineIdRef.current = null; lastScaledownIdRef.current = null; startBoth(podcastTranscript ?? undefined); }}
+                className="px-5 py-2 bg-cyan-600 hover:bg-cyan-500 rounded-xl text-xs font-bold transition-colors text-white whitespace-nowrap">
+                Start Conversation
+              </button>
+            ) : status === "active" ? (
+              <button onClick={endBoth}
+                className="px-5 py-2 bg-red-700 hover:bg-red-600 rounded-xl text-xs font-bold transition-colors text-white whitespace-nowrap">
+                End Session
+              </button>
+            ) : (
+              <button disabled
+                className="px-5 py-2 bg-gray-800 text-gray-500 rounded-xl text-xs font-bold opacity-60 whitespace-nowrap">
+                {status === "connecting" ? "Connecting..." : "Ending..."}
+              </button>
+            )}
           </div>
         </div>
 
@@ -363,7 +436,7 @@ export default function Home() {
           return (
             <div className="grid grid-cols-3 divide-x divide-gray-800">
 
-              {/* 1 — ACCURACY (priority #1) */}
+              {/* 1 — ACCURACY */}
               <div className="px-8 py-5 flex flex-col gap-3">
                 <p className={`text-[10px] uppercase tracking-widest ${textMuted}`}>Answer Quality Score</p>
                 <p className={`text-[10px] ${textMuted} -mt-2`}>
@@ -380,7 +453,7 @@ export default function Home() {
                     ) : (
                       <>
                         <p className="text-3xl font-black text-gray-500">—</p>
-                        <p className={`text-[10px] ${textMuted} mt-0.5`}>run baseline conversation</p>
+                        <p className={`text-[10px] ${textMuted} mt-0.5`}>run a conversation to see</p>
                       </>
                     )}
                   </div>
@@ -394,7 +467,7 @@ export default function Home() {
                     ) : (
                       <>
                         <p className="text-3xl font-black text-gray-600">—</p>
-                        <p className={`text-[10px] ${textMuted} mt-0.5`}>run ScaleDown conversation</p>
+                        <p className={`text-[10px] ${textMuted} mt-0.5`}>run a conversation to see</p>
                       </>
                     )}
                   </div>
@@ -403,7 +476,7 @@ export default function Home() {
 
               {/* 2 — TOKENS */}
               <div className="px-8 py-5 flex flex-col gap-4">
-                <p className={`text-[10px] uppercase tracking-widest ${textMuted}`}>Tokens Sent to Groq · Same Conversation</p>
+                <p className={`text-[10px] uppercase tracking-widest ${textMuted}`}>Tokens Sent to LLM · Same Conversation</p>
                 <div className="space-y-3">
                   <div>
                     <div className="flex justify-between text-xs mb-1">
@@ -418,31 +491,27 @@ export default function Home() {
                       <span className="text-cyan-400 font-semibold">{s.totalCompressedTokens.toLocaleString()} <span className="text-cyan-700">↓ {compressionPct}%</span></span>
                     </div>
                     <div className="h-5 bg-gray-800 rounded overflow-hidden">
-                      <div
-                        className="h-full bg-cyan-500 rounded"
-                        style={{ width: `${100 - compressionPct}%` }}
-                      />
+                      <div className="h-full bg-cyan-500 rounded" style={{ width: `${100 - compressionPct}%` }} />
                     </div>
                   </div>
                 </div>
-                <p className={`text-[10px] ${textMuted}`}>{tokensSaved.toLocaleString()} tokens never reached Groq</p>
+                <p className={`text-[10px] ${textMuted}`}>{tokensSaved.toLocaleString()} tokens never reached the LLM</p>
               </div>
 
               {/* 3 — LATENCY BREAKDOWN */}
               <div className="px-8 py-5 flex flex-col gap-3">
                 <p className={`text-[10px] uppercase tracking-widest ${textMuted}`}>Avg Latency · Per Turn</p>
                 <div className="grid grid-cols-2 gap-6">
-                  {/* Baseline */}
                   <div>
                     <p className={`text-[10px] uppercase tracking-widest ${textMuted} mb-2`}>Baseline</p>
                     <div className="space-y-1">
                       <div className="flex justify-between text-xs">
-                        <span className={textMuted}>Groq</span>
+                        <span className={textMuted}>LLM</span>
                         <span className={textSub}>{b.avgGroqLatencyMs}ms</span>
                       </div>
                       <div className="flex justify-between text-xs">
-                        <span className={textMuted}>Overhead</span>
-                        <span className={textMuted}>0ms</span>
+                        <span className={textMuted}>+300ms simulated</span>
+                        <span className={textMuted}>—</span>
                       </div>
                       <div className={`h-px bg-gray-800 my-1`} />
                       <div className="flex justify-between">
@@ -451,12 +520,11 @@ export default function Home() {
                       </div>
                     </div>
                   </div>
-                  {/* ScaleDown */}
                   <div>
                     <p className="text-[10px] uppercase tracking-widest text-cyan-900 mb-2">ScaleDown</p>
                     <div className="space-y-1">
                       <div className="flex justify-between text-xs">
-                        <span className="text-cyan-900">Groq</span>
+                        <span className="text-cyan-900">LLM</span>
                         <span className="text-cyan-400">{s.avgGroqLatencyMs}ms</span>
                       </div>
                       <div className="flex justify-between text-xs">
@@ -472,7 +540,7 @@ export default function Home() {
                   </div>
                 </div>
                 <p className={`text-[10px] ${textMuted}`}>
-                  +{latencyDiff}ms overhead today · closes as context grows (fewer tokens = faster Groq)
+                  {latencyDiff > 0 ? `+${latencyDiff}ms` : `${latencyDiff}ms`} vs baseline · fewer tokens = faster LLM
                 </p>
               </div>
 
@@ -481,13 +549,80 @@ export default function Home() {
         })() : (
           <div className="px-6 py-4 flex items-center gap-3">
             <p className={`text-xs ${textMuted}`}>
-              {evalRunning ? "Calculating..." : "Run a baseline and a ScaleDown conversation to see the comparison"}
+              {evalRunning ? "Calculating..." : "Start a conversation to see the comparison"}
             </p>
           </div>
         )}
       </header>
 
-      {/* ── Audio unlock overlay — shown when browser blocks autoplay ── */}
+      {/* ── PODCAST SEARCH PANEL ── */}
+      {status === "idle" && (
+        <div className={`shrink-0 border-b ${border} ${headerBg} px-6 py-3`}>
+          {selectedEpisodeId ? (
+            <div className="flex items-center gap-3">
+              <div className="flex-1 min-w-0">
+                <p className={`text-[10px] uppercase tracking-widest ${textMuted} mb-0.5`}>Podcast context loaded</p>
+                <p className="text-xs font-semibold truncate">{selectedEpisodeTitle}</p>
+                {loadingTranscript && <p className={`text-[10px] ${textMuted}`}>Transcribing audio via Deepgram... (may take 10–30s)</p>}
+                {!loadingTranscript && podcastTranscript && (
+                  <p className={`text-[10px] ${textMuted}`}>
+                    {podcastTranscript.length.toLocaleString()} chars ·{" "}
+                    {podcastContextSource === "transcript" ? "transcript via Deepgram" : "episode description (transcription unavailable)"}{" "}
+                    · agent will answer questions about this episode
+                  </p>
+                )}
+                {!loadingTranscript && !podcastTranscript && (
+                  <p className="text-[10px] text-yellow-500">No context available for this episode</p>
+                )}
+              </div>
+              <button onClick={clearPodcast} className={`shrink-0 px-3 py-1 rounded-lg text-xs font-medium transition-colors ${btnBase}`}>
+                Clear
+              </button>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center gap-2">
+                <p className={`text-[10px] uppercase tracking-widest ${textMuted} shrink-0`}>Podcast</p>
+                <input
+                  type="text"
+                  value={podcastQuery}
+                  onChange={e => setPodcastQuery(e.target.value)}
+                  onKeyDown={e => e.key === "Enter" && searchPodcasts()}
+                  placeholder="Search for a podcast episode to discuss..."
+                  className={`flex-1 text-xs rounded-lg px-3 py-1.5 outline-none ${isDark ? "bg-gray-900 border border-gray-800 text-white placeholder-gray-600" : "bg-white border border-gray-200 text-gray-900 placeholder-gray-400"}`}
+                />
+                <button
+                  onClick={searchPodcasts}
+                  disabled={podcastSearching || !podcastQuery.trim()}
+                  className={`shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-40 ${btnBase}`}>
+                  {podcastSearching ? "Searching..." : "Search"}
+                </button>
+              </div>
+              {podcastResults.length > 0 && (
+                <div className={`rounded-xl border ${border} divide-y ${border} overflow-hidden max-h-48 overflow-y-auto`}>
+                  {podcastResults.map(ep => (
+                    <button
+                      key={ep.id}
+                      onClick={() => selectEpisode(ep)}
+                      className={`w-full text-left px-3 py-2 transition-colors ${tableHover} flex items-start gap-3`}>
+                      {ep.thumbnail && (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={ep.thumbnail} alt="" className="w-8 h-8 rounded shrink-0 mt-0.5 object-cover" />
+                      )}
+                      <div className="min-w-0">
+                        <p className="text-xs font-semibold truncate">{ep.title}</p>
+                        <p className={`text-[10px] ${textMuted} truncate`}>{ep.podcast}</p>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Audio unlock overlay ── */}
       {audioAutoplayFailed && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm">
           <div className="bg-gray-900 border border-yellow-500/50 rounded-2xl px-10 py-8 flex flex-col items-center gap-4 shadow-2xl">
@@ -496,204 +631,126 @@ export default function Home() {
             <p className="text-gray-400 text-sm text-center max-w-xs">
               Click below to enable the agent's voice. This is a one-time Chrome autoplay requirement.
             </p>
-            <button
-              onClick={unlockAudio}
-              className="mt-2 px-8 py-3 bg-yellow-500 hover:bg-yellow-400 text-black font-bold rounded-xl text-base transition-colors animate-pulse"
-            >
+            <button onClick={unlockAudio}
+              className="mt-2 px-8 py-3 bg-yellow-500 hover:bg-yellow-400 text-black font-bold rounded-xl text-base transition-colors animate-pulse">
               Enable Audio
             </button>
           </div>
         </div>
       )}
 
-      {/* ── MAIN: two-column grid — headers share row 1, tables share row 2 ── */}
+      {/* ── MAIN: two-column grid ── */}
       <div className="flex-1 overflow-hidden grid grid-cols-2" style={{ gridTemplateRows: "auto 1fr" }}>
 
-        {/* ══════════════════ LEFT HEADER: BASELINE ══════════════════ */}
+        {/* ══ LEFT HEADER: BASELINE ══ */}
         <div className={`border-b border-r-2 ${border} px-5 pt-4 pb-3 ${panelBg}`}>
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <div className="flex items-center gap-2 mb-1">
-                  <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full uppercase tracking-widest ${baselineTag}`}>
-                    Baseline
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <div className="flex items-center gap-2 mb-1">
+                <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full uppercase tracking-widest ${baselineTag}`}>
+                  Baseline
+                </span>
+                {isLive && (
+                  <span className="flex items-center gap-1 text-xs text-green-400">
+                    <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse inline-block" />
+                    Live
                   </span>
-                  {isLiveBaseline && (
-                    <span className="flex items-center gap-1 text-xs text-green-400">
-                      <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse inline-block" />
-                      Live
-                    </span>
-                  )}
-                </div>
-                <p className={`text-[11px] ${textMuted}`}>
-                  Raw Agora agent · no compression · direct to Groq
-                </p>
-                <p className={`text-[10px] ${textMuted} mt-0.5`}>
-                  ASR: Deepgram · LLM: Groq Llama 3.3 · TTS: Cartesia
-                </p>
-              </div>
-
-              {/* Baseline action */}
-              <div className="shrink-0 flex flex-col items-end gap-1.5">
-                {status === "idle" ? (
-                  <button onClick={startBaseline}
-                    className={`px-4 py-2 rounded-xl text-xs font-semibold transition-colors whitespace-nowrap ${baselineBtn}`}>
-                    Start Baseline
-                  </button>
-                ) : isLiveBaseline ? (
-                  <button onClick={endConversation}
-                    className="px-4 py-2 bg-red-700 hover:bg-red-600 rounded-xl text-xs font-semibold transition-colors text-white whitespace-nowrap">
-                    End Session
-                  </button>
-                ) : (
-                  <button disabled
-                    className={`px-4 py-2 rounded-xl text-xs font-semibold opacity-40 whitespace-nowrap ${baselineBtnDis}`}>
-                    {status === "connecting" ? "Connecting..." : status === "ending" ? "Ending..." : "ScaleDown active"}
-                  </button>
-                )}
-                {isLiveBaseline && (
-                  <p className={`text-[10px] ${agentAudioReceived ? "text-green-400" : "text-yellow-400"}`}>
-                    {agentAudioReceived ? "● audio receiving" : "○ waiting for audio..."}
-                  </p>
-                )}
-                {audioAutoplayFailed && isLiveBaseline && (
-                  <button onClick={unlockAudio} className="px-3 py-1 bg-yellow-600 hover:bg-yellow-500 rounded-lg text-xs font-medium animate-pulse">
-                    Enable Audio
-                  </button>
                 )}
               </div>
+              <p className={`text-[11px] ${textMuted}`}>No compression · direct to LLM · +300ms simulated delay</p>
+              <p className={`text-[10px] ${textMuted} mt-0.5`}>ASR: Deepgram · LLM: OpenAI · TTS: Cartesia</p>
             </div>
-
-            {leftData && leftData.traces.length > 0 && (
-              <div className={`mt-3 flex items-center gap-6 text-xs ${textMuted}`}>
-                <span>{leftData.traces.reduce((s, t) => s + t.originalTokens, 0).toLocaleString()} tokens · {leftData.totalTurns} turns</span>
-                <span>avg {leftData.summary.avgTotalLatencyMs > 0 ? `${leftData.summary.avgTotalLatencyMs}ms` : "—"} latency</span>
-              </div>
-            )}
-
-            {/* Baseline conv selector */}
-            {!isLiveBaseline && (
-              <div className="mt-3 flex items-center gap-2">
-                {baselineConvs.length > 0 ? (
-                  <select
-                    value={selectedBaselineConvId || ""}
-                    onChange={e => setSelectedBaselineConvId(e.target.value || null)}
-                    className={`text-xs rounded-lg px-2.5 py-1.5 cursor-pointer ${baselineSelect}`}>
-                    <option value="">Select conversation</option>
-                    {baselineConvs.map(c => (
-                      <option key={c.id} value={c.id}>{c.label}</option>
-                    ))}
-                  </select>
-                ) : (
-                  <p className={`text-xs ${textMuted}`}>No baseline conversations yet</p>
-                )}
-                {leftData && <span className={`text-[10px] ${textMuted} ml-auto`}>{leftData.totalTurns} turns</span>}
-              </div>
-            )}
+            <div className="shrink-0 flex flex-col items-end gap-1.5">
+              {isLive && (
+                <p className={`text-[10px] ${agentAudioReceived ? "text-green-400" : "text-yellow-400"}`}>
+                  {agentAudioReceived ? "● audio receiving" : "○ waiting for audio..."}
+                </p>
+              )}
+            </div>
+          </div>
+          {leftData && leftData.traces.length > 0 && (
+            <div className={`mt-3 flex items-center gap-6 text-xs ${textMuted}`}>
+              <span>{leftData.traces.reduce((s, t) => s + t.originalTokens, 0).toLocaleString()} tokens · {leftData.totalTurns} turns</span>
+              <span>avg {leftData.summary.avgTotalLatencyMs > 0 ? `${leftData.summary.avgTotalLatencyMs}ms` : "—"} latency</span>
+            </div>
+          )}
+          {!isLive && (
+            <div className="mt-3 flex items-center gap-2">
+              {baselineConvs.length > 0 ? (
+                <select value={selectedBaselineConvId || ""} onChange={e => setSelectedBaselineConvId(e.target.value || null)}
+                  className={`text-xs rounded-lg px-2.5 py-1.5 cursor-pointer ${baselineSelect}`}>
+                  <option value="">Select conversation</option>
+                  {baselineConvs.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
+                </select>
+              ) : (
+                <p className={`text-xs ${textMuted}`}>No baseline conversations yet</p>
+              )}
+              {leftData && <span className={`text-[10px] ${textMuted} ml-auto`}>{leftData.totalTurns} turns</span>}
+            </div>
+          )}
         </div>
 
-        {/* ══════════════════ RIGHT HEADER: SCALEDOWN ══════════════════ */}
+        {/* ══ RIGHT HEADER: SCALEDOWN ══ */}
         <div className={`border-b px-5 pt-4 pb-3 ${sdPanelBg} ${sdBorderCol}`}>
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <div className="flex items-center gap-2 mb-1">
-                  <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full uppercase tracking-widest ${sdTag}`}>
-                    ScaleDown
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <div className="flex items-center gap-2 mb-1">
+                <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full uppercase tracking-widest ${sdTag}`}>
+                  ScaleDown
+                </span>
+                {isLive && (
+                  <span className="flex items-center gap-1 text-xs text-green-400">
+                    <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse inline-block" />
+                    Live
                   </span>
-                  {isLiveScaledown && (
-                    <span className="flex items-center gap-1 text-xs text-green-400">
-                      <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse inline-block" />
-                      Live
-                    </span>
-                  )}
-                </div>
-                <p className={`text-[11px] text-cyan-700`}>
-                  Agora agent · ScaleDown compression → Groq
-                </p>
-                <p className={`text-[10px] text-cyan-900 mt-0.5`}>
-                  ASR: Deepgram · <span className="text-cyan-600 font-semibold">Compress: ScaleDown</span> · LLM: Groq Llama 3.3 · TTS: Cartesia
-                </p>
-              </div>
-
-              {/* ScaleDown action */}
-              <div className="shrink-0 flex flex-col items-end gap-1.5">
-                {status === "idle" ? (
-                  <button onClick={startScaledown}
-                    className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 rounded-xl text-xs font-semibold transition-colors text-white whitespace-nowrap">
-                    Start ScaleDown
-                  </button>
-                ) : isLiveScaledown ? (
-                  <button onClick={endConversation}
-                    className="px-4 py-2 bg-red-700 hover:bg-red-600 rounded-xl text-xs font-semibold transition-colors text-white whitespace-nowrap">
-                    End Session
-                  </button>
-                ) : (
-                  <button disabled
-                    className={`px-4 py-2 rounded-xl text-xs font-semibold opacity-40 whitespace-nowrap ${sdBtnDis}`}>
-                    {status === "connecting" ? "Connecting..." : status === "ending" ? "Ending..." : "Baseline active"}
-                  </button>
-                )}
-                {isLiveScaledown && (
-                  <p className={`text-[10px] ${agentAudioReceived ? "text-green-400" : "text-yellow-400"}`}>
-                    {agentAudioReceived ? "● audio receiving" : "○ waiting for audio..."}
-                  </p>
-                )}
-                {audioAutoplayFailed && isLiveScaledown && (
-                  <button onClick={unlockAudio} className="px-3 py-1 bg-yellow-600 hover:bg-yellow-500 rounded-lg text-xs font-medium animate-pulse">
-                    Enable Audio
-                  </button>
                 )}
               </div>
+              <p className={`text-[11px] text-cyan-700`}>ScaleDown compression → LLM</p>
+              <p className={`text-[10px] text-cyan-900 mt-0.5`}>
+                ASR: Deepgram · <span className="text-cyan-600 font-semibold">Compress: ScaleDown</span> · LLM: OpenAI · TTS: Cartesia
+              </p>
             </div>
-
-            {rightData && rightData.traces.length > 0 && (() => {
-              const totalIn = rightData.traces.reduce((s, t) => s + t.originalTokens, 0);
-              const totalOut = rightData.traces.reduce((s, t) => s + t.compressedTokens, 0);
-              const pct = totalIn > 0 ? (((totalIn - totalOut) / totalIn) * 100) | 0 : 0;
-              return (
-                <div className={`mt-3 flex items-center gap-6 text-xs text-cyan-900`}>
-                  <span className="text-cyan-400 font-semibold">{pct}% tokens compressed</span>
-                  <span>avg {rightData.summary.avgTotalLatencyMs > 0 ? `${rightData.summary.avgTotalLatencyMs}ms` : "—"} latency</span>
-                  {rightData.summary.avgQualityScore != null && (
-                    <span className="text-cyan-400 font-semibold">{(rightData.summary.avgQualityScore * 100).toFixed(0)}% fidelity</span>
-                  )}
-                </div>
-              );
-            })()}
-
-            {/* ScaleDown conv selector */}
-            {!isLiveScaledown && (
-              <div className="mt-3 flex items-center gap-2">
-                {scaledownConvs.length > 0 ? (
-                  <select
-                    value={selectedScaledownConvId || ""}
-                    onChange={e => setSelectedScaledownConvId(e.target.value || null)}
-                    className={`text-xs rounded-lg px-2.5 py-1.5 cursor-pointer ${sdSelectCls}`}>
-                    <option value="">Select conversation</option>
-                    {scaledownConvs.map(c => (
-                      <option key={c.id} value={c.id}>{c.label}</option>
-                    ))}
-                  </select>
-                ) : (
-                  <p className={`text-xs text-cyan-900`}>No ScaleDown conversations yet</p>
-                )}
-                {rightData && <span className={`text-[10px] text-cyan-900 ml-auto`}>{rightData.totalTurns} turns</span>}
+          </div>
+          {rightData && rightData.traces.length > 0 && (() => {
+            const totalIn = rightData.traces.reduce((s, t) => s + t.originalTokens, 0);
+            const totalOut = rightData.traces.reduce((s, t) => s + t.compressedTokens, 0);
+            const pct = totalIn > 0 ? (((totalIn - totalOut) / totalIn) * 100) | 0 : 0;
+            return (
+              <div className="mt-3 flex items-center gap-6 text-xs text-cyan-900">
+                <span className="text-cyan-400 font-semibold">{pct}% tokens compressed</span>
+                <span>avg {rightData.summary.avgTotalLatencyMs > 0 ? `${rightData.summary.avgTotalLatencyMs}ms` : "—"} latency</span>
               </div>
-            )}
+            );
+          })()}
+          {!isLive && (
+            <div className="mt-3 flex items-center gap-2">
+              {scaledownConvs.length > 0 ? (
+                <select value={selectedScaledownConvId || ""} onChange={e => setSelectedScaledownConvId(e.target.value || null)}
+                  className={`text-xs rounded-lg px-2.5 py-1.5 cursor-pointer ${sdSelectCls}`}>
+                  <option value="">Select conversation</option>
+                  {scaledownConvs.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
+                </select>
+              ) : (
+                <p className="text-xs text-cyan-900">No ScaleDown conversations yet</p>
+              )}
+              {rightData && <span className="text-[10px] text-cyan-900 ml-auto">{rightData.totalTurns} turns</span>}
+            </div>
+          )}
         </div>
 
         {/* ══ LEFT TABLE ══ */}
         <div className={`overflow-auto border-r-2 ${dividerBorder} ${tableBg}`}>
-          {renderTable(leftData, true, isLiveBaseline)}
+          {renderTable(leftData, true, isLive)}
         </div>
 
         {/* ══ RIGHT TABLE ══ */}
         <div className={`overflow-auto ${sdTableBg}`}>
-          {renderTable(rightData, false, isLiveScaledown)}
+          {renderTable(rightData, false, isLive)}
         </div>
 
       </div>
 
-      {/* Global error / audio */}
+      {/* Global error */}
       {error && (
         <div className="fixed bottom-4 left-4 right-4 max-w-sm p-3 bg-red-900/90 border border-red-700 rounded-xl text-red-300 text-xs z-50">
           {error}
