@@ -341,8 +341,16 @@ export default function Home() {
           const s = evalData.scaledown;
           const compressionPct = s.compressionPct;
           const tokensSaved = s.tokensSaved;
-          const sdLatency = s.avgTotalLatencyMs ?? 0;
-          const baseLatency = s.avgGroqLatencyMs ?? 0;
+          // Use per-turn trace data for latency so baseline_latency_ms is included
+          const tracesForLatency = displayData?.traces ?? [];
+          const sdTurns = tracesForLatency.filter(t => t.totalLatencyMs > 0);
+          const bTurns = tracesForLatency.filter(t => t.baselineLatencyMs != null);
+          const sdLatency = sdTurns.length > 0
+            ? Math.round(sdTurns.reduce((a, t) => a + t.totalLatencyMs, 0) / sdTurns.length)
+            : (s.avgTotalLatencyMs ?? 0);
+          const baseLatency = bTurns.length > 0
+            ? Math.round(bTurns.reduce((a, t) => a + (t.baselineLatencyMs ?? 0), 0) / bTurns.length)
+            : (s.avgGroqLatencyMs ?? 0);
           const diff = sdLatency - baseLatency;
 
           return (
