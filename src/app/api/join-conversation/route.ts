@@ -18,7 +18,7 @@ import { getSupabase } from "@/lib/supabase";
  */
 export async function POST(req: NextRequest) {
   try {
-    const { channelName, token, uid, botUid, podcastContext } = await req.json();
+    const { channelName, token, uid, botUid, podcastContext, existingConversationId } = await req.json();
 
     const appId = process.env.NEXT_PUBLIC_AGORA_APP_ID;
 
@@ -26,23 +26,42 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Agora App ID not configured" }, { status: 500 });
     }
 
-    // Reset turn counter for new conversation
-    resetTurnCounter();
+    let conversationId: string;
 
-    // Single mode: always ScaleDown — proxy runs both paths internally
-    const { data: convData, error: convError } = await getSupabase()
-      .from("conversations")
-      .insert({ label: `Conversation`, mode: "scaledown" })
-      .select("id")
-      .single();
-
-    if (convError) {
-      console.error("[Supabase] Failed to create conversation:", convError.message);
+    if (existingConversationId) {
+      // Continuing an existing conversation — reuse the same ID, don't reset turn counter
+      conversationId = existingConversationId;
+      // Sync in-memory turn counter to max turn already stored in Supabase
+      const res = await fetch(
+        `${process.env.NEXT_PUBLIC_SUPABASE_URL}/rest/v1/trace_events?conversation_id=eq.${encodeURIComponent(conversationId)}&select=turn&order=turn.desc&limit=1`,
+        { headers: { apikey: process.env.SUPABASE_SERVICE_ROLE_KEY!, Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY!}` }, cache: "no-store" }
+      );
+      if (res.ok) {
+        const rows = await res.json();
+        if (rows.length > 0) {
+          // Pre-seed the counter so next turn continues from where we left off
+          const { getAndIncrementTurn } = await import("@/lib/scaledown");
+          // Call it (rows[0].turn) times to advance counter to current max
+          for (let i = 0; i < rows[0].turn; i++) getAndIncrementTurn(conversationId);
+        }
+      }
+      console.log("[Supabase] Continuing conversation:", conversationId);
     } else {
-      console.log("[Supabase] Created conversation:", convData?.id);
-    }
+      // New conversation — create record and reset turn counter
+      resetTurnCounter();
+      const { data: convData, error: convError } = await getSupabase()
+        .from("conversations")
+        .insert({ label: `Conversation`, mode: "scaledown" })
+        .select("id")
+        .single();
 
-    const conversationId = convData?.id || "unknown";
+      if (convError) {
+        console.error("[Supabase] Failed to create conversation:", convError.message);
+      } else {
+        console.log("[Supabase] Created conversation:", convData?.id);
+      }
+      conversationId = convData?.id || "unknown";
+    }
 
     const proxyBase = getProxyBaseUrl(req);
     const llmUrl = `${proxyBase}/api/llm-proxy?conversationId=${conversationId}`;
