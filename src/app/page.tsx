@@ -52,6 +52,7 @@ function rouge1F1(ref: string, hyp: string): number {
 export default function Home() {
   const [liveTraceData, setLiveTraceData] = useState<TraceData | null>(null);
   const lastConvIdRef = useRef<string | null>(null);
+  const [endedConversationId, setEndedConversationId] = useState<string | null>(null);
 
   const {
     status, error, conversationId,
@@ -108,6 +109,13 @@ export default function Home() {
   }, []);
 
   useEffect(() => { if (conversationId) lastConvIdRef.current = conversationId; }, [conversationId]);
+
+  // When session ends, save the conversationId so we can offer "Continue"
+  useEffect(() => {
+    if (status === "idle" && lastConvIdRef.current) {
+      setEndedConversationId(lastConvIdRef.current);
+    }
+  }, [status]);
 
   // Live polling
   useEffect(() => {
@@ -318,12 +326,22 @@ export default function Home() {
             </button>
 
             {status === "idle" ? (
-              <button
-                onClick={() => { setLiveTraceData(null); lastConvIdRef.current = null; startConversation("scaledown", podcastTranscript ?? undefined); }}
-                disabled={loadingTranscript}
-                className="px-5 py-2 bg-cyan-600 hover:bg-cyan-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl text-xs font-bold transition-colors text-white whitespace-nowrap">
-                Start Conversation
-              </button>
+              <div className="flex items-center gap-2">
+                {endedConversationId && (
+                  <button
+                    onClick={() => { startConversation("scaledown", podcastTranscript ?? undefined, endedConversationId); }}
+                    disabled={loadingTranscript}
+                    className="px-5 py-2 bg-gray-700 hover:bg-gray-600 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl text-xs font-bold transition-colors text-white whitespace-nowrap">
+                    Continue
+                  </button>
+                )}
+                <button
+                  onClick={() => { setLiveTraceData(null); lastConvIdRef.current = null; setEndedConversationId(null); startConversation("scaledown", podcastTranscript ?? undefined); }}
+                  disabled={loadingTranscript}
+                  className="px-5 py-2 bg-cyan-600 hover:bg-cyan-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl text-xs font-bold transition-colors text-white whitespace-nowrap">
+                  Start New
+                </button>
+              </div>
             ) : status === "active" ? (
               <button onClick={endConversation}
                 className="px-5 py-2 bg-red-700 hover:bg-red-600 rounded-xl text-xs font-bold transition-colors text-white whitespace-nowrap">
@@ -340,7 +358,7 @@ export default function Home() {
 
         {/* ── Stats bar ── */}
         {traces.length > 0 ? (
-          <div className="grid grid-cols-3 divide-x divide-gray-800">
+          <div className="grid grid-cols-1 sm:grid-cols-3 divide-y sm:divide-y-0 divide-x-0 sm:divide-x divide-gray-800">
             {/* Tokens */}
             <div className="px-8 py-4 flex flex-col gap-1">
               <p className={`text-[10px] uppercase tracking-widest ${textMuted}`}>Context Tokens Compressed</p>
@@ -355,14 +373,15 @@ export default function Home() {
                 </div>
                 <p className="text-sm font-bold text-cyan-600 self-end mb-1">↓ {tokensSavedPct}%</p>
               </div>
-              <div className="h-1.5 bg-gray-800 rounded overflow-hidden mt-1">
-                <div className="h-full bg-cyan-500 rounded" style={{ width: `${100 - tokensSavedPct}%` }} />
+              <div className="h-1.5 rounded overflow-hidden mt-1 flex">
+                <div className="h-full bg-cyan-500" style={{ width: `${100 - tokensSavedPct}%` }} />
+                <div className="h-full bg-red-400/60 flex-1" />
               </div>
             </div>
             {/* Latency */}
             <div className="px-8 py-4 flex flex-col gap-1">
               <p className={`text-[10px] uppercase tracking-widest ${textMuted}`}>Avg LLM Latency per Turn</p>
-              <div className="flex items-baseline gap-4">
+              <div className="flex flex-wrap items-baseline gap-x-4 gap-y-2">
                 <div>
                   <p className={`text-[10px] ${textMuted}`}>Baseline</p>
                   <p className={`text-2xl font-black ${textSub}`}>{avgBaselineLatency > 0 ? `${avgBaselineLatency}ms` : "—"}</p>
