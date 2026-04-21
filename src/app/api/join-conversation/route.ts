@@ -18,7 +18,7 @@ import { getSupabase } from "@/lib/supabase";
  */
 export async function POST(req: NextRequest) {
   try {
-    const { channelName, token, uid, botUid, requestedMode } = await req.json();
+    const { channelName, token, uid, botUid, requestedMode, podcastContext } = await req.json();
 
     const appId = process.env.NEXT_PUBLIC_AGORA_APP_ID;
     // Allow UI to override BASELINE_MODE env var for live mode switching
@@ -40,7 +40,6 @@ export async function POST(req: NextRequest) {
 
     // Create a conversation record in Supabase to group trace events
     const convMode = isBaseline ? "baseline" : "scaledown";
-    const convCounter = Date.now(); // used for label ordering
     const { data: convData, error: convError } = await getSupabase()
       .from("conversations")
       .insert({ label: `Conversation`, mode: convMode })
@@ -85,8 +84,9 @@ export async function POST(req: NextRequest) {
           system_messages: [
             {
               role: "system",
-              content:
-                "You are a helpful voice AI assistant. Keep responses concise and conversational since this is a real-time voice conversation. Be natural and friendly.",
+              content: podcastContext
+                ? `You are a helpful voice AI assistant. The user wants to discuss a podcast episode. Here is the transcript/context:\n\n${podcastContext}\n\nAnswer questions about this podcast episode. Keep responses concise and conversational since this is a real-time voice conversation. Be natural and friendly.`
+                : "You are a helpful voice AI assistant. Keep responses concise and conversational since this is a real-time voice conversation. Be natural and friendly.",
             },
           ],
           greeting_message: "Hello! How can I help you today?",
