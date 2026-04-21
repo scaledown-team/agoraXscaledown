@@ -564,11 +564,11 @@ export default function Home() {
               <div className="flex-1 min-w-0">
                 <p className={`text-[10px] uppercase tracking-widest ${textMuted} mb-0.5`}>Podcast context loaded</p>
                 <p className="text-xs font-semibold truncate">{selectedEpisodeTitle}</p>
-                {loadingTranscript && <p className={`text-[10px] ${textMuted}`}>Loading transcript...</p>}
+                {loadingTranscript && <p className={`text-[10px] ${textMuted}`}>Transcribing audio via Deepgram... (may take 10–30s)</p>}
                 {!loadingTranscript && podcastTranscript && (
                   <p className={`text-[10px] ${textMuted}`}>
                     {podcastTranscript.length.toLocaleString()} chars ·{" "}
-                    {podcastContextSource === "transcript" ? "full transcript" : "episode description (free plan — no transcript)"}{" "}
+                    {podcastContextSource === "transcript" ? "transcript via Deepgram" : "episode description (transcription unavailable)"}{" "}
                     · agent will answer questions about this episode
                   </p>
                 )}
