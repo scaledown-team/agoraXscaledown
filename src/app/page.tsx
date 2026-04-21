@@ -361,7 +361,7 @@ export default function Home() {
                 <p className={`text-[10px] uppercase tracking-widest ${textMuted}`}>Avg Latency per Turn</p>
                 <div className="flex items-baseline gap-4">
                   <div>
-                    <p className={`text-[10px] ${textMuted}`}>Baseline (+300ms)</p>
+                    <p className={`text-[10px] ${textMuted}`}>Baseline</p>
                     <p className={`text-2xl font-black ${textSub}`}>{baseLatency}ms</p>
                   </div>
                   <div>
