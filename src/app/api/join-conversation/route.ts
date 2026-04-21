@@ -89,7 +89,7 @@ export async function POST(req: NextRequest) {
               role: "system",
               content: podcastContext
                 ? `You are a helpful voice AI assistant. The user wants to discuss a podcast episode. Here is the transcript/context:\n\n${podcastContext}\n\nAnswer questions about this podcast episode. Keep responses concise and conversational since this is a real-time voice conversation. Be natural and friendly.`
-                : "You are a helpful voice AI assistant. Keep responses concise and conversational since this is a real-time voice conversation. Be natural and friendly.",
+                : "You are a helpful voice AI assistant. The user wants to discuss a podcast episode. Keep responses concise and conversational since this is a real-time voice conversation. Be natural and friendly.",
             },
           ],
           greeting_message: "Hello! How can I help you today?",
